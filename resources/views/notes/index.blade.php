@@ -40,6 +40,13 @@
         @else
             <p class="mt-2 text-sm text-zinc-500">Regular search uses the database. AI search embeds your query, then ranks notes with your selected strategy and metric.</p>
         @endif
+        <p class="mt-2 text-sm text-zinc-500">
+            @auth
+                You are searching only your own public and private notes.
+            @else
+                You are searching public notes from all authors.
+            @endauth
+        </p>
     </form>
 
     <div id="strategy-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-zinc-950/50 px-4">
@@ -59,6 +66,8 @@
                 </button>
                 <button type="button" data-strategy="ann_hnsw" class="rounded-md border border-zinc-300 p-4 text-left hover:border-sky-400 hover:bg-sky-50">
                     <span class="block font-medium">ANN / HNSW</span>
+                    <span class="mt-1 block text-sm text-zinc-600">* approximate nearest neighbor</span>
+                    <span class="mt-1 block text-sm text-zinc-600">* Hierarchical Navigable Small World</span>
                     <span class="mt-1 block text-sm text-zinc-600">সব vector exhaustively check না করে HNSW index দিয়ে দ্রুত approximately nearest neighbor খোঁজার approach. For now only Cosine is implemented.</span>
                 </button>
             </div>
@@ -152,9 +161,11 @@
         <div class="rounded-lg border border-dashed border-zinc-300 bg-white p-10 text-center">
             <h2 class="text-lg font-semibold">{{ $search === '' ? 'No notes yet' : 'No matching notes' }}</h2>
             <p class="mt-2 text-zinc-600">{{ $search === '' ? 'Add your first note and you will see it listed here.' : 'Try another title or body keyword.' }}</p>
-            @if ($search === '')
-                <a href="{{ route('notes.create') }}" class="mt-5 inline-flex rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800">Create note</a>
-            @endif
+            @auth
+                @if ($search === '')
+                    <a href="{{ route('notes.create') }}" class="mt-5 inline-flex rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800">Create note</a>
+                @endif
+            @endauth
         </div>
     @else
         <div class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
@@ -171,7 +182,13 @@
                         <tr>
                             <td class="px-4 py-4 align-top">
                                 <a href="{{ route('notes.show', $note) }}" class="font-medium text-zinc-950 hover:underline">{{ $note->title }}</a>
-                                <p class="mt-1 text-xs text-zinc-500">{{ $note->created_at->diffForHumans() }}</p>
+                                <div class="mt-1 flex items-center gap-2 text-xs text-zinc-500">
+                                    <span>{{ $note->created_at->diffForHumans() }}</span>
+                                    <span>By {{ $note->author_name ?? $note->user?->name ?? 'Unknown author' }}</span>
+                                    <span class="rounded-full px-2 py-0.5 font-medium {{ $note->is_public ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800' }}">
+                                        {{ $note->is_public ? 'Public' : 'Private' }}
+                                    </span>
+                                </div>
                             </td>
                             <td class="hidden max-w-xl px-4 py-4 text-zinc-600 md:table-cell">
                                 {{ \Illuminate\Support\Str::limit($note->body, 140) }}
@@ -187,14 +204,16 @@
                                 @endif
                             </td>
                             <td class="px-4 py-4 text-right align-top">
-                                <div class="flex justify-end gap-3">
-                                    <a href="{{ route('notes.edit', $note) }}" class="font-medium text-zinc-700 hover:text-zinc-950">Edit</a>
-                                    <form method="POST" action="{{ route('notes.destroy', $note) }}" onsubmit="return confirm('Delete this note?')">
-                                        @csrf
-                                        @method('DELETE')
-                                        <button type="submit" class="font-medium text-red-600 hover:text-red-700">Delete</button>
-                                    </form>
-                                </div>
+                                @can('update', $note)
+                                    <div class="flex justify-end gap-3">
+                                        <a href="{{ route('notes.edit', $note) }}" class="font-medium text-zinc-700 hover:text-zinc-950">Edit</a>
+                                        <form method="POST" action="{{ route('notes.destroy', $note) }}" onsubmit="return confirm('Delete this note?')">
+                                            @csrf
+                                            @method('DELETE')
+                                            <button type="submit" class="font-medium text-red-600 hover:text-red-700">Delete</button>
+                                        </form>
+                                    </div>
+                                @endcan
                             </td>
                         </tr>
                     @endforeach

@@ -9,9 +9,21 @@
     <body class="bg-zinc-50 text-zinc-950 antialiased">
         <div class="min-h-screen">
             <header class="border-b border-zinc-200 bg-white">
-                <div class="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
+                <div class="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-5">
                     <a href="{{ route('notes.index') }}" class="text-xl font-semibold">Laravel Notes</a>
-                    <a href="{{ route('notes.create') }}" class="rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800">New note</a>
+                    <nav class="flex items-center gap-3 text-sm font-medium">
+                        @auth
+                            <span class="hidden text-zinc-600 sm:inline">{{ auth()->user()->name }}</span>
+                            <form method="POST" action="{{ route('logout') }}">
+                                @csrf
+                                <button type="submit" class="text-zinc-700 hover:text-zinc-950">Logout</button>
+                            </form>
+                            <a href="{{ route('notes.create') }}" class="rounded-md bg-zinc-950 px-4 py-2 text-white hover:bg-zinc-800">New note</a>
+                        @else
+                            <a href="{{ route('login') }}" class="text-zinc-700 hover:text-zinc-950">Login</a>
+                            <a href="{{ route('register') }}" class="text-zinc-700 hover:text-zinc-950">Register</a>
+                        @endauth
+                    </nav>
                 </div>
             </header>
 

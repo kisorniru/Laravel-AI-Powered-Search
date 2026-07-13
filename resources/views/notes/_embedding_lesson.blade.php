@@ -7,7 +7,7 @@
         </div>
         <div class="rounded-md border border-sky-200 bg-white p-3">
             <p class="font-medium">2. Text is prepared</p>
-            <p class="mt-1 text-sky-800">Laravel joins the title and body as the text that will become an embedding.</p>
+            <p class="mt-1 text-sky-800">Laravel prepares the title, body, visibility, and author name as the text that will become an embedding.</p>
         </div>
         <div class="rounded-md border border-sky-200 bg-white p-3">
             <p class="font-medium">3. Hugging Face returns a vector</p>

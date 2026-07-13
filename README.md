@@ -9,6 +9,8 @@ This is **not RAG yet**. There is no LLM answer generation. The app currently re
 ## Current Features
 
 - Notes CRUD: create, list, view, edit, and delete notes.
+- Session-based registration and login.
+- User-owned notes with public or private visibility.
 - Hugging Face embeddings using `sentence-transformers/all-MiniLM-L6-v2`.
 - PostgreSQL `pgvector` storage with `embedding vector(384)`.
 - Regular database search using `ILIKE`.
@@ -82,6 +84,12 @@ Current rule:
 ```
 
 We are not chunking notes yet.
+
+The embedded text currently contains:
+
+```text
+title + body + visibility + author name
+```
 
 ### 3. Generate Embeddings With Hugging Face
 
@@ -187,10 +195,10 @@ The difference is that PostgreSQL now has an HNSW index path available for cosin
 ### When A User Creates Or Updates A Note
 
 ```text
-1. User submits title and body.
+1. User submits title, body, and visibility.
 2. Laravel validates the request.
 3. Laravel saves the note first.
-4. Laravel builds the embedding text from title + body.
+4. Laravel builds the embedding text from title, body, visibility, and author name.
 5. Laravel calls Hugging Face.
 6. Hugging Face returns a 384-dimensional vector.
 7. Laravel stores the vector in notes.embedding.
@@ -209,9 +217,10 @@ the user sees a flash message
 
 ```text
 1. User types search text.
-2. Laravel searches title/body with ILIKE.
-3. Matching notes are returned.
-4. No embedding API call happens.
+2. Laravel chooses the searchable notes: public notes for guests, or only the logged-in user's notes.
+3. Laravel searches title/body with ILIKE.
+4. Matching notes are returned.
+5. No embedding API call happens.
 ```
 
 ### When A User Runs AI Search
@@ -237,7 +246,7 @@ Example `.env` values:
 DB_CONNECTION=pgsql
 DB_HOST=127.0.0.1
 DB_PORT=5432
-DB_DATABASE=laravel_llm_app
+DB_DATABASE=laravel_ai_powered_search
 DB_USERNAME=root
 DB_PASSWORD=
 

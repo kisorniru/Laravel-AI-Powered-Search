@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Note;
+use App\Models\User;
 use App\Services\HuggingFaceEmbeddingService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Throwable;
 
 class NoteController extends Controller
@@ -17,7 +19,7 @@ class NoteController extends Controller
 
         return view('notes.index', [
             // Regular search is intentionally plain SQL text matching.
-            'notes' => $this->regularSearch($search),
+            'notes' => $this->regularSearch($search, $request->user()),
             'search' => $search,
             'searchMode' => 'regular',
             'queryVectorPreview' => null,
@@ -52,7 +54,7 @@ class NoteController extends Controller
                 $embedding = $embeddings->embed($search);
                 $queryVectorPreview = $this->vectorPreview($embedding);
                 $queryVector = $this->toVectorLiteral($embedding);
-                $notes = $this->vectorSearchResults($queryVector, $strategy, $metric);
+                $notes = $this->vectorSearchResults($queryVector, $strategy, $metric, $request->user()?->id);
                 $queryVectorStatus = $this->strategyLabel($strategy).' + '.$this->metricLabel($metric).' vector search returned the best 2 matches.';
             } catch (Throwable $exception) {
                 $queryVectorStatus = 'AI search failed: '.$exception->getMessage();
@@ -79,7 +81,7 @@ class NoteController extends Controller
 
     public function store(Request $request, HuggingFaceEmbeddingService $embeddings)
     {
-        $note = Note::create($this->validateNote($request));
+        $note = $request->user()->notes()->create($this->validateNote($request));
 
         return redirect()
             ->route('notes.index')
@@ -88,6 +90,9 @@ class NoteController extends Controller
 
     public function show(Note $note)
     {
+        Gate::authorize('view', $note);
+        $note->load('user:id,name');
+
         return view('notes.show', [
             'note' => $note,
         ]);
@@ -95,6 +100,8 @@ class NoteController extends Controller
 
     public function edit(Note $note)
     {
+        Gate::authorize('update', $note);
+
         return view('notes.edit', [
             'note' => $note,
         ]);
@@ -102,7 +109,9 @@ class NoteController extends Controller
 
     public function update(Request $request, Note $note, HuggingFaceEmbeddingService $embeddings)
     {
-        $note->update($this->validateNote($request));
+        Gate::authorize('update', $note);
+
+        $note->update($this->validateNote($request, $note));
 
         return redirect()
             ->route('notes.show', $note)
@@ -111,6 +120,8 @@ class NoteController extends Controller
 
     public function destroy(Note $note)
     {
+        Gate::authorize('delete', $note);
+
         $note->delete();
 
         return redirect()
@@ -118,12 +129,21 @@ class NoteController extends Controller
             ->with('status', 'Note deleted.');
     }
 
-    private function validateNote(Request $request): array
+    private function validateNote(Request $request, ?Note $note = null): array
     {
-        return $request->validate([
+        $validated = $request->validate([
             'title' => ['required', 'string', 'max:120'],
             'body' => ['required', 'string', 'max:5000'],
+            'visibility' => ['sometimes', 'string', 'in:public,private'],
         ]);
+
+        return [
+            'title' => $validated['title'],
+            'body' => $validated['body'],
+            'is_public' => isset($validated['visibility'])
+                ? $validated['visibility'] === 'public'
+                : ($note?->is_public ?? true),
+        ];
     }
 
     private function embeddingStatus(string $message, Note $note, HuggingFaceEmbeddingService $embeddings): string
@@ -133,7 +153,7 @@ class NoteController extends Controller
         }
 
         try {
-            // A note embedding represents the latest title + body content.
+            // A note embedding represents its content, visibility, and author.
             $embedding = $embeddings->embed($note->textToEmbed());
 
             DB::table('notes')
@@ -170,10 +190,12 @@ class NoteController extends Controller
         )).', ...]';
     }
 
-    private function regularSearch(string $search)
+    private function regularSearch(string $search, ?User $user)
     {
         // This is not AI search; it only checks whether text appears in title/body.
         return Note::query()
+            ->with('user:id,name')
+            ->visibleTo($user)
             ->when($search !== '', function ($query) use ($search): void {
                 $query->where(function ($query) use ($search): void {
                     $query
@@ -192,21 +214,21 @@ class NoteController extends Controller
             || ($strategy === 'ann_hnsw' && $metric === 'cosine');
     }
 
-    private function vectorSearchResults(string $queryVector, string $strategy, string $metric)
+    private function vectorSearchResults(string $queryVector, string $strategy, string $metric, ?int $userId)
     {
         if ($strategy === 'ann_hnsw') {
-            return $this->annHnswCosineSearch($queryVector);
+            return $this->annHnswCosineSearch($queryVector, $userId);
         }
 
-        return $this->exactSearch($queryVector, $metric);
+        return $this->exactSearch($queryVector, $metric, $userId);
     }
 
-    private function exactSearch(string $queryVector, string $metric)
+    private function exactSearch(string $queryVector, string $metric, ?int $userId)
     {
         return match ($metric) {
-            'euclidean' => $this->exactEuclideanSearch($queryVector),
-            'inner_product' => $this->exactInnerProductSearch($queryVector),
-            default => $this->exactCosineSearch($queryVector),
+            'euclidean' => $this->exactEuclideanSearch($queryVector, $userId),
+            'inner_product' => $this->exactInnerProductSearch($queryVector, $userId),
+            default => $this->exactCosineSearch($queryVector, $userId),
         };
     }
 
@@ -229,96 +251,66 @@ class NoteController extends Controller
         };
     }
 
-    private function exactCosineSearch(string $queryVector)
+    private function exactCosineSearch(string $queryVector, ?int $userId)
     {
         // Exact strategy: compare the query vector with every stored note vector.
         // Cosine metric in pgvector uses the <=> operator, and lower distance is better.
-        return collect(DB::select(
-            <<<'SQL'
-                SELECT id, title, body, created_at, updated_at, embedded_at,
-                       embedding <=> ?::vector AS vector_distance
-                FROM notes
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> ?::vector
-                LIMIT 2
-            SQL,
-            [$queryVector, $queryVector],
-        ))->map(function (object $row): Note {
-            $note = new Note;
-            $note->forceFill((array) $row);
-            $note->exists = true;
-
-            return $note;
-        });
+        return $this->vectorSearchByOperator($queryVector, '<=>', $userId);
     }
 
-    private function exactEuclideanSearch(string $queryVector)
+    private function exactEuclideanSearch(string $queryVector, ?int $userId)
     {
         // Exact strategy: compare the query vector with every stored note vector.
         // Euclidean metric in pgvector uses the <-> operator, and lower distance is better.
-        return collect(DB::select(
-            <<<'SQL'
-                SELECT id, title, body, created_at, updated_at, embedded_at,
-                       embedding <-> ?::vector AS vector_distance
-                FROM notes
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <-> ?::vector
-                LIMIT 2
-            SQL,
-            [$queryVector, $queryVector],
-        ))->map(function (object $row): Note {
-            $note = new Note;
-            $note->forceFill((array) $row);
-            $note->exists = true;
-
-            return $note;
-        });
+        return $this->vectorSearchByOperator($queryVector, '<->', $userId);
     }
 
-    private function exactInnerProductSearch(string $queryVector)
+    private function exactInnerProductSearch(string $queryVector, ?int $userId)
     {
         // Exact strategy: compare the query vector with every stored note vector.
         // Inner Product in pgvector uses the <#> operator.
         // pgvector returns the negative inner product, so lower returned values rank better.
-        return collect(DB::select(
-            <<<'SQL'
-                SELECT id, title, body, created_at, updated_at, embedded_at,
-                       embedding <#> ?::vector AS vector_distance
-                FROM notes
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <#> ?::vector
-                LIMIT 2
-            SQL,
-            [$queryVector, $queryVector],
-        ))->map(function (object $row): Note {
-            $note = new Note;
-            $note->forceFill((array) $row);
-            $note->exists = true;
-
-            return $note;
-        });
+        return $this->vectorSearchByOperator($queryVector, '<#>', $userId);
     }
 
-    private function annHnswCosineSearch(string $queryVector)
+    private function annHnswCosineSearch(string $queryVector, ?int $userId)
     {
         // ANN / HNSW strategy: PostgreSQL can use the HNSW cosine index on notes.embedding.
         // The metric is still cosine distance (<=>); HNSW changes how candidates are retrieved.
-        return collect(DB::select(
-            <<<'SQL'
-                SELECT id, title, body, created_at, updated_at, embedded_at,
-                       embedding <=> ?::vector AS vector_distance
-                FROM notes
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> ?::vector
-                LIMIT 2
-            SQL,
-            [$queryVector, $queryVector],
-        ))->map(function (object $row): Note {
-            $note = new Note;
-            $note->forceFill((array) $row);
-            $note->exists = true;
+        return $this->vectorSearchByOperator($queryVector, '<=>', $userId);
+    }
 
-            return $note;
-        });
+    private function vectorSearchByOperator(string $queryVector, string $operator, ?int $userId)
+    {
+        return DB::table('notes')
+            ->leftJoin('users', 'users.id', '=', 'notes.user_id')
+            ->select(
+                'notes.id',
+                'notes.user_id',
+                'notes.title',
+                'notes.body',
+                'notes.is_public',
+                'notes.created_at',
+                'notes.updated_at',
+                'notes.embedded_at',
+                'users.name as author_name',
+            )
+            ->selectRaw("notes.embedding {$operator} ?::vector AS vector_distance", [$queryVector])
+            ->whereNotNull('notes.embedding')
+            ->when(
+                $userId === null,
+                fn ($query) => $query->where('notes.is_public', true),
+                fn ($query) => $query->where('notes.user_id', $userId),
+            )
+            ->orderByRaw("notes.embedding {$operator} ?::vector", [$queryVector])
+            ->limit(2)
+            ->get()
+            ->map(function (object $row): Note {
+                $note = new Note;
+                $note->forceFill((array) $row);
+                $note->exists = true;
+
+                return $note;
+            });
     }
 }

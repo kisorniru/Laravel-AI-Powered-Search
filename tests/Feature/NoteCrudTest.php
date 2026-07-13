@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Note;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
@@ -16,7 +17,7 @@ class NoteCrudTest extends TestCase
 
         config([
             'database.default' => 'pgsql',
-            'database.connections.pgsql.database' => 'laravel_llm_app',
+            'database.connections.pgsql.database' => 'laravel_ai_powered_search',
         ]);
 
         DB::beginTransaction();
@@ -32,8 +33,9 @@ class NoteCrudTest extends TestCase
     public function test_a_note_can_be_created_and_viewed(): void
     {
         config(['services.huggingface.token' => null]);
+        $user = User::factory()->create();
 
-        $response = $this->post('/notes', [
+        $response = $this->actingAs($user)->post('/notes', [
             'title' => 'Vector search basics',
             'body' => 'Store plain text notes in Laravel.',
         ]);
@@ -45,6 +47,8 @@ class NoteCrudTest extends TestCase
         $response->assertRedirect('/notes');
         $this->assertDatabaseHas('notes', [
             'title' => 'Vector search basics',
+            'user_id' => $user->id,
+            'is_public' => true,
         ]);
 
         $this->get("/notes/{$note->id}")
@@ -56,8 +60,9 @@ class NoteCrudTest extends TestCase
     public function test_a_note_can_be_created_without_a_hugging_face_token(): void
     {
         config(['services.huggingface.token' => null]);
+        $user = User::factory()->create();
 
-        $this->post('/notes', [
+        $this->actingAs($user)->post('/notes', [
             'title' => 'No token note',
             'body' => 'The note should still be saved.',
         ])->assertRedirect('/notes');
@@ -75,12 +80,13 @@ class NoteCrudTest extends TestCase
         }
 
         config(['services.huggingface.token' => 'fake-token']);
+        $user = User::factory()->create(['name' => 'Embedding Author']);
 
         Http::fake([
             'router.huggingface.co/*' => Http::response($this->fakeEmbedding(), 200),
         ]);
 
-        $this->post('/notes', [
+        $this->actingAs($user)->post('/notes', [
             'title' => 'Embedded note',
             'body' => 'This note is converted into a vector.',
         ])->assertRedirect('/notes');
@@ -92,19 +98,20 @@ class NoteCrudTest extends TestCase
         $this->assertNotNull($note->embedded_at);
 
         Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
-            && $request['inputs'] === "Embedded note\n\nThis note is converted into a vector.");
+            && $request['inputs'] === "Title: Embedded note\n\nBody:\nThis note is converted into a vector.\n\nVisibility: Public\n\nAuthor: Embedding Author");
     }
 
     public function test_a_note_can_be_updated(): void
     {
         config(['services.huggingface.token' => null]);
+        $user = User::factory()->create();
 
-        $note = Note::create([
+        $note = $user->notes()->create([
             'title' => 'Old title',
             'body' => 'Old body',
         ]);
 
-        $this->put("/notes/{$note->id}", [
+        $this->actingAs($user)->put("/notes/{$note->id}", [
             'title' => 'Updated title',
             'body' => 'Updated body',
         ])->assertRedirect("/notes/{$note->id}");
@@ -119,13 +126,14 @@ class NoteCrudTest extends TestCase
     public function test_a_note_can_be_deleted(): void
     {
         config(['services.huggingface.token' => null]);
+        $user = User::factory()->create();
 
-        $note = Note::create([
+        $note = $user->notes()->create([
             'title' => 'Temporary note',
             'body' => 'This note will be deleted.',
         ]);
 
-        $this->delete("/notes/{$note->id}")
+        $this->actingAs($user)->delete("/notes/{$note->id}")
             ->assertRedirect('/notes');
 
         $this->assertDatabaseMissing('notes', [

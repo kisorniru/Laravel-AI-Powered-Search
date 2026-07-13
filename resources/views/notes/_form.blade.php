@@ -29,6 +29,41 @@
     @enderror
 </div>
 
+<fieldset class="mt-5">
+    <legend class="text-sm font-medium text-zinc-700">Visibility</legend>
+    <div class="mt-2 grid gap-3 sm:grid-cols-2">
+        <label class="flex cursor-pointer gap-3 rounded-md border border-zinc-300 bg-white p-4">
+            <input
+                name="visibility"
+                type="radio"
+                value="public"
+                class="mt-1"
+                @checked(old('visibility', isset($note) && ! $note->is_public ? 'private' : 'public') === 'public')
+            >
+            <span>
+                <span class="block font-medium text-zinc-950">Public</span>
+                <span class="mt-1 block text-sm text-zinc-600">Everyone can view and search this note.</span>
+            </span>
+        </label>
+        <label class="flex cursor-pointer gap-3 rounded-md border border-zinc-300 bg-white p-4">
+            <input
+                name="visibility"
+                type="radio"
+                value="private"
+                class="mt-1"
+                @checked(old('visibility', isset($note) && ! $note->is_public ? 'private' : 'public') === 'private')
+            >
+            <span>
+                <span class="block font-medium text-zinc-950">Private</span>
+                <span class="mt-1 block text-sm text-zinc-600">Only you can view and search this note.</span>
+            </span>
+        </label>
+    </div>
+    @error('visibility')
+        <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
+    @enderror
+</fieldset>
+
 <div class="mt-6 flex items-center gap-3">
     <button type="submit" class="rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800">
         {{ $buttonText }}
