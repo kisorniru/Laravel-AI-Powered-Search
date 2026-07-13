@@ -28,6 +28,7 @@ class NoteController extends Controller
             'strategyLabel' => null,
             'metric' => null,
             'metricLabel' => null,
+            'distanceThreshold' => null,
         ]);
     }
 
@@ -39,6 +40,7 @@ class NoteController extends Controller
         $notes = collect();
         $queryVectorPreview = null;
         $queryVectorStatus = null;
+        $distanceThreshold = $this->distanceThreshold($metric);
 
         if ($search === '') {
             return redirect()->route('notes.index');
@@ -55,7 +57,7 @@ class NoteController extends Controller
                 $queryVectorPreview = $this->vectorPreview($embedding);
                 $queryVector = $this->toVectorLiteral($embedding);
                 $notes = $this->vectorSearchResults($queryVector, $strategy, $metric, $request->user()?->id);
-                $queryVectorStatus = $this->strategyLabel($strategy).' + '.$this->metricLabel($metric).' vector search returned the best 2 matches.';
+                $queryVectorStatus = $this->vectorSearchStatus($strategy, $metric, $distanceThreshold, $notes->count());
             } catch (Throwable $exception) {
                 $queryVectorStatus = 'AI search failed: '.$exception->getMessage();
             }
@@ -71,6 +73,7 @@ class NoteController extends Controller
             'strategyLabel' => $this->strategyLabel($strategy),
             'metric' => $metric,
             'metricLabel' => $this->metricLabel($metric),
+            'distanceThreshold' => $distanceThreshold,
         ]);
     }
 
@@ -211,24 +214,37 @@ class NoteController extends Controller
     private function implementedVectorSearch(string $strategy, string $metric): bool
     {
         return ($strategy === 'exact' && in_array($metric, ['cosine', 'euclidean', 'inner_product'], true))
-            || ($strategy === 'ann_hnsw' && $metric === 'cosine');
+            || ($strategy === 'ann_hnsw' && in_array($metric, ['cosine', 'euclidean', 'inner_product'], true))
+            || ($strategy === 'ann_ivfflat' && in_array($metric, ['cosine', 'euclidean', 'inner_product'], true));
     }
 
     private function vectorSearchResults(string $queryVector, string $strategy, string $metric, ?int $userId)
     {
         if ($strategy === 'ann_hnsw') {
-            return $this->annHnswCosineSearch($queryVector, $userId);
+            return match ($metric) {
+                'euclidean' => $this->annHnswEuclideanSearch($queryVector, $userId, $this->distanceThreshold($metric)),
+                'inner_product' => $this->annHnswInnerProductSearch($queryVector, $userId),
+                default => $this->annHnswCosineSearch($queryVector, $userId, $this->distanceThreshold($metric)),
+            };
         }
 
-        return $this->exactSearch($queryVector, $metric, $userId);
+        if ($strategy === 'ann_ivfflat') {
+            return match ($metric) {
+                'euclidean' => $this->annIvfflatEuclideanSearch($queryVector, $userId, $this->distanceThreshold($metric)),
+                'inner_product' => $this->annIvfflatInnerProductSearch($queryVector, $userId),
+                default => $this->annIvfflatCosineSearch($queryVector, $userId, $this->distanceThreshold($metric)),
+            };
+        }
+
+        return $this->exactSearch($queryVector, $metric, $userId, $this->distanceThreshold($metric));
     }
 
-    private function exactSearch(string $queryVector, string $metric, ?int $userId)
+    private function exactSearch(string $queryVector, string $metric, ?int $userId, ?float $maxDistance)
     {
         return match ($metric) {
-            'euclidean' => $this->exactEuclideanSearch($queryVector, $userId),
+            'euclidean' => $this->exactEuclideanSearch($queryVector, $userId, $maxDistance),
             'inner_product' => $this->exactInnerProductSearch($queryVector, $userId),
-            default => $this->exactCosineSearch($queryVector, $userId),
+            default => $this->exactCosineSearch($queryVector, $userId, $maxDistance),
         };
     }
 
@@ -236,6 +252,7 @@ class NoteController extends Controller
     {
         return match ($strategy) {
             'ann_hnsw' => 'ANN / HNSW',
+            'ann_ivfflat' => 'ANN / IVFFlat',
             'exact' => 'Exact',
             default => 'Vector',
         };
@@ -251,18 +268,41 @@ class NoteController extends Controller
         };
     }
 
-    private function exactCosineSearch(string $queryVector, ?int $userId)
+    private function distanceThreshold(string $metric): ?float
+    {
+        return match ($metric) {
+            // Cosine distance ranges from 0 to 2 in pgvector. Lower is more similar.
+            'cosine' => 0.85,
+            // Euclidean/L2 depends on vector scale, so this is a simple learning threshold.
+            'euclidean' => 0.5,
+            // Inner product uses negative scores in pgvector, so skip a distance threshold for now.
+            default => null,
+        };
+    }
+
+    private function vectorSearchStatus(string $strategy, string $metric, ?float $distanceThreshold, int $count): string
+    {
+        $status = $this->strategyLabel($strategy).' + '.$this->metricLabel($metric).' vector search returned '.$count.' match'.($count === 1 ? '' : 'es').'.';
+
+        if ($distanceThreshold !== null) {
+            return $status.' Only results with '.$this->metricLabel($metric).' distance <= '.$distanceThreshold.' are shown.';
+        }
+
+        return $status;
+    }
+
+    private function exactCosineSearch(string $queryVector, ?int $userId, ?float $maxDistance)
     {
         // Exact strategy: compare the query vector with every stored note vector.
         // Cosine metric in pgvector uses the <=> operator, and lower distance is better.
-        return $this->vectorSearchByOperator($queryVector, '<=>', $userId);
+        return $this->vectorSearchByOperator($queryVector, '<=>', $userId, $maxDistance);
     }
 
-    private function exactEuclideanSearch(string $queryVector, ?int $userId)
+    private function exactEuclideanSearch(string $queryVector, ?int $userId, ?float $maxDistance)
     {
         // Exact strategy: compare the query vector with every stored note vector.
         // Euclidean metric in pgvector uses the <-> operator, and lower distance is better.
-        return $this->vectorSearchByOperator($queryVector, '<->', $userId);
+        return $this->vectorSearchByOperator($queryVector, '<->', $userId, $maxDistance);
     }
 
     private function exactInnerProductSearch(string $queryVector, ?int $userId)
@@ -270,17 +310,52 @@ class NoteController extends Controller
         // Exact strategy: compare the query vector with every stored note vector.
         // Inner Product in pgvector uses the <#> operator.
         // pgvector returns the negative inner product, so lower returned values rank better.
-        return $this->vectorSearchByOperator($queryVector, '<#>', $userId);
+        return $this->vectorSearchByOperator($queryVector, '<#>', $userId, null);
     }
 
-    private function annHnswCosineSearch(string $queryVector, ?int $userId)
+    private function annHnswCosineSearch(string $queryVector, ?int $userId, ?float $maxDistance)
     {
         // ANN / HNSW strategy: PostgreSQL can use the HNSW cosine index on notes.embedding.
         // The metric is still cosine distance (<=>); HNSW changes how candidates are retrieved.
-        return $this->vectorSearchByOperator($queryVector, '<=>', $userId);
+        return $this->vectorSearchByOperator($queryVector, '<=>', $userId, $maxDistance);
     }
 
-    private function vectorSearchByOperator(string $queryVector, string $operator, ?int $userId)
+    private function annHnswEuclideanSearch(string $queryVector, ?int $userId, ?float $maxDistance)
+    {
+        // ANN / HNSW strategy: PostgreSQL can use the HNSW Euclidean/L2 index on notes.embedding.
+        // The metric is still Euclidean distance (<->); HNSW changes how candidates are retrieved.
+        return $this->vectorSearchByOperator($queryVector, '<->', $userId, $maxDistance);
+    }
+
+    private function annHnswInnerProductSearch(string $queryVector, ?int $userId)
+    {
+        // ANN / HNSW strategy: PostgreSQL can use the HNSW Inner Product index on notes.embedding.
+        // The metric is still negative inner product (<#>); HNSW changes how candidates are retrieved.
+        return $this->vectorSearchByOperator($queryVector, '<#>', $userId, null);
+    }
+
+    private function annIvfflatCosineSearch(string $queryVector, ?int $userId, ?float $maxDistance)
+    {
+        // ANN / IVFFlat strategy: PostgreSQL can use the IVFFlat cosine index on notes.embedding.
+        // The metric is still cosine distance (<=>); IVFFlat searches nearby inverted lists.
+        return $this->vectorSearchByOperator($queryVector, '<=>', $userId, $maxDistance);
+    }
+
+    private function annIvfflatEuclideanSearch(string $queryVector, ?int $userId, ?float $maxDistance)
+    {
+        // ANN / IVFFlat strategy: PostgreSQL can use the IVFFlat Euclidean/L2 index on notes.embedding.
+        // The metric is still Euclidean distance (<->); IVFFlat searches nearby inverted lists.
+        return $this->vectorSearchByOperator($queryVector, '<->', $userId, $maxDistance);
+    }
+
+    private function annIvfflatInnerProductSearch(string $queryVector, ?int $userId)
+    {
+        // ANN / IVFFlat strategy: PostgreSQL can use the IVFFlat Inner Product index on notes.embedding.
+        // The metric is still negative inner product (<#>); IVFFlat searches nearby inverted lists.
+        return $this->vectorSearchByOperator($queryVector, '<#>', $userId, null);
+    }
+
+    private function vectorSearchByOperator(string $queryVector, string $operator, ?int $userId, ?float $maxDistance)
     {
         return DB::table('notes')
             ->leftJoin('users', 'users.id', '=', 'notes.user_id')
@@ -297,6 +372,10 @@ class NoteController extends Controller
             )
             ->selectRaw("notes.embedding {$operator} ?::vector AS vector_distance", [$queryVector])
             ->whereNotNull('notes.embedding')
+            ->when($maxDistance !== null, function ($query) use ($operator, $queryVector, $maxDistance): void {
+                // Threshold removes weak matches that only appear because we request the top 2.
+                $query->whereRaw("notes.embedding {$operator} ?::vector <= ?", [$queryVector, $maxDistance]);
+            })
             ->when(
                 $userId === null,
                 fn ($query) => $query->where('notes.is_public', true),

@@ -344,6 +344,237 @@ class NoteCrudTest extends TestCase
             && $request['inputs'] === 'database');
     }
 
+    public function test_cosine_vector_search_filters_weak_matches_by_distance_threshold(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([1.0, 0.0, 0.0]), 200),
+        ]);
+
+        $strong = Note::create([
+            'title' => 'Strong cosine threshold note',
+            'body' => 'This should stay because it is close to the query vector.',
+        ]);
+
+        $weak = Note::create([
+            'title' => 'Weak cosine threshold note',
+            'body' => 'This would be second without the distance threshold.',
+        ]);
+
+        $this->storeEmbedding($strong, [1.0, 0.0, 0.0]);
+        $this->storeEmbedding($weak, [0.0, 1.0, 0.0]);
+
+        $this->get('/notes/ai-search?search=database&strategy=ann_hnsw&metric=cosine')
+            ->assertOk()
+            ->assertSee('Cosine distance &lt;= 0.85', false)
+            ->assertSee('Strong cosine threshold note')
+            ->assertDontSee('Weak cosine threshold note');
+    }
+
+    public function test_ai_search_uses_ann_hnsw_euclidean_vector_search_and_returns_the_best_two(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([0.0, 0.0, 0.0]), 200),
+        ]);
+
+        $closest = Note::create([
+            'title' => 'Nearest HNSW euclidean note',
+            'body' => 'This should rank first through the HNSW Euclidean path.',
+        ]);
+
+        $second = Note::create([
+            'title' => 'Second HNSW euclidean note',
+            'body' => 'This should rank second through the HNSW Euclidean path.',
+        ]);
+
+        $third = Note::create([
+            'title' => 'Far HNSW euclidean note',
+            'body' => 'This should not appear because ANN HNSW Euclidean search returns only two.',
+        ]);
+
+        $this->storeEmbedding($closest, [0.1, 0.0, 0.0]);
+        $this->storeEmbedding($second, [0.3, 0.0, 0.0]);
+        $this->storeEmbedding($third, [0.9, 0.0, 0.0]);
+
+        $this->get('/notes/ai-search?search=database&strategy=ann_hnsw&metric=euclidean')
+            ->assertOk()
+            ->assertSee('ANN / HNSW + Euclidean vector search')
+            ->assertSee('HNSW index')
+            ->assertSee('vector_l2_ops')
+            ->assertSee('Nearest HNSW euclidean note')
+            ->assertSee('Second HNSW euclidean note')
+            ->assertDontSee('Far HNSW euclidean note');
+
+        Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
+            && $request['inputs'] === 'database');
+    }
+
+    public function test_ai_search_uses_ann_hnsw_inner_product_vector_search_and_returns_the_best_two(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([1.0, 0.0, 0.0]), 200),
+        ]);
+
+        $strongest = Note::create([
+            'title' => 'Strongest HNSW inner product note',
+            'body' => 'This should rank first through the HNSW Inner Product path.',
+        ]);
+
+        $second = Note::create([
+            'title' => 'Second HNSW inner product note',
+            'body' => 'This should rank second through the HNSW Inner Product path.',
+        ]);
+
+        $weakest = Note::create([
+            'title' => 'Weak HNSW inner product note',
+            'body' => 'This should not appear because ANN HNSW Inner Product search returns only two.',
+        ]);
+
+        $this->storeEmbedding($strongest, [0.9, 0.0, 0.0]);
+        $this->storeEmbedding($second, [0.5, 0.0, 0.0]);
+        $this->storeEmbedding($weakest, [0.1, 0.0, 0.0]);
+
+        $this->get('/notes/ai-search?search=database&strategy=ann_hnsw&metric=inner_product')
+            ->assertOk()
+            ->assertSee('ANN / HNSW + Inner Product vector search')
+            ->assertSee('HNSW index')
+            ->assertSee('vector_ip_ops')
+            ->assertSee('Strongest HNSW inner product note')
+            ->assertSee('Second HNSW inner product note')
+            ->assertDontSee('Weak HNSW inner product note');
+
+        Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
+            && $request['inputs'] === 'database');
+    }
+
+    public function test_ai_search_uses_ann_ivfflat_cosine_vector_search_and_returns_the_best_two(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([1.0, 0.0, 0.0]), 200),
+        ]);
+
+        $closest = Note::create([
+            'title' => 'Closest IVFFlat cosine note',
+            'body' => 'This should rank first through the IVFFlat cosine path.',
+        ]);
+
+        $second = Note::create([
+            'title' => 'Second IVFFlat cosine note',
+            'body' => 'This should rank second through the IVFFlat cosine path.',
+        ]);
+
+        $third = Note::create([
+            'title' => 'Far IVFFlat cosine note',
+            'body' => 'This should not appear because ANN IVFFlat Cosine search returns only two.',
+        ]);
+
+        $this->storeEmbedding($closest, [1.0, 0.0, 0.0]);
+        $this->storeEmbedding($second, [0.8, 0.2, 0.0]);
+        $this->storeEmbedding($third, [0.0, 1.0, 0.0]);
+
+        $this->get('/notes/ai-search?search=database&strategy=ann_ivfflat&metric=cosine')
+            ->assertOk()
+            ->assertSee('ANN / IVFFlat + Cosine vector search')
+            ->assertSee('IVFFlat index')
+            ->assertSee('vector_cosine_ops')
+            ->assertSee('lists = 10')
+            ->assertSee('Closest IVFFlat cosine note')
+            ->assertSee('Second IVFFlat cosine note')
+            ->assertDontSee('Far IVFFlat cosine note');
+
+        Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
+            && $request['inputs'] === 'database');
+    }
+
+    public function test_ai_search_uses_ann_ivfflat_euclidean_vector_search_and_returns_the_best_two(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([0.0, 0.0, 0.0]), 200),
+        ]);
+
+        $closest = Note::create([
+            'title' => 'Nearest IVFFlat euclidean note',
+            'body' => 'This should rank first through the IVFFlat Euclidean path.',
+        ]);
+
+        $second = Note::create([
+            'title' => 'Second IVFFlat euclidean note',
+            'body' => 'This should rank second through the IVFFlat Euclidean path.',
+        ]);
+
+        $third = Note::create([
+            'title' => 'Far IVFFlat euclidean note',
+            'body' => 'This should not appear because ANN IVFFlat Euclidean search returns only two.',
+        ]);
+
+        $this->storeEmbedding($closest, [0.1, 0.0, 0.0]);
+        $this->storeEmbedding($second, [0.3, 0.0, 0.0]);
+        $this->storeEmbedding($third, [0.9, 0.0, 0.0]);
+
+        $this->get('/notes/ai-search?search=database&strategy=ann_ivfflat&metric=euclidean')
+            ->assertOk()
+            ->assertSee('ANN / IVFFlat + Euclidean vector search')
+            ->assertSee('IVFFlat index')
+            ->assertSee('vector_l2_ops')
+            ->assertSee('lists = 10')
+            ->assertSee('Nearest IVFFlat euclidean note')
+            ->assertSee('Second IVFFlat euclidean note')
+            ->assertDontSee('Far IVFFlat euclidean note');
+
+        Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
+            && $request['inputs'] === 'database');
+    }
+
+    public function test_ai_search_uses_ann_ivfflat_inner_product_vector_search_and_returns_the_best_two(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([1.0, 0.0, 0.0]), 200),
+        ]);
+
+        $strongest = Note::create([
+            'title' => 'Strongest IVFFlat inner product note',
+            'body' => 'This should rank first through the IVFFlat Inner Product path.',
+        ]);
+
+        $second = Note::create([
+            'title' => 'Second IVFFlat inner product note',
+            'body' => 'This should rank second through the IVFFlat Inner Product path.',
+        ]);
+
+        $weakest = Note::create([
+            'title' => 'Weak IVFFlat inner product note',
+            'body' => 'This should not appear because ANN IVFFlat Inner Product search returns only two.',
+        ]);
+
+        $this->storeEmbedding($strongest, [0.9, 0.0, 0.0]);
+        $this->storeEmbedding($second, [0.5, 0.0, 0.0]);
+        $this->storeEmbedding($weakest, [0.1, 0.0, 0.0]);
+
+        $this->get('/notes/ai-search?search=database&strategy=ann_ivfflat&metric=inner_product')
+            ->assertOk()
+            ->assertSee('ANN / IVFFlat + Inner Product vector search')
+            ->assertSee('IVFFlat index')
+            ->assertSee('vector_ip_ops')
+            ->assertSee('lists = 10')
+            ->assertSee('Strongest IVFFlat inner product note')
+            ->assertSee('Second IVFFlat inner product note')
+            ->assertDontSee('Weak IVFFlat inner product note');
+
+        Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
+            && $request['inputs'] === 'database');
+    }
+
     private function fakeEmbedding(array $start = []): array
     {
         return array_pad($start, 384, 0.0);

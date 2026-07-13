@@ -68,7 +68,12 @@
                     <span class="block font-medium">ANN / HNSW</span>
                     <span class="mt-1 block text-sm text-zinc-600">* approximate nearest neighbor</span>
                     <span class="mt-1 block text-sm text-zinc-600">* Hierarchical Navigable Small World</span>
-                    <span class="mt-1 block text-sm text-zinc-600">সব vector exhaustively check না করে HNSW index দিয়ে দ্রুত approximately nearest neighbor খোঁজার approach. For now only Cosine is implemented.</span>
+                    <span class="mt-1 block text-sm text-zinc-600">সব vector exhaustively check না করে HNSW index দিয়ে দ্রুত approximately nearest neighbor খোঁজার approach. Cosine, Euclidean, and Inner Product are implemented.</span>
+                </button>
+                <button type="button" data-strategy="ann_ivfflat" class="rounded-md border border-zinc-300 p-4 text-left hover:border-sky-400 hover:bg-sky-50">
+                    <span class="block font-medium">ANN / IVFFlat</span>
+                    <span class="mt-1 block text-sm text-zinc-600">* inverted file flat index</span>
+                    <span class="mt-1 block text-sm text-zinc-600">Vectors are grouped into lists/clusters, then nearby lists are searched. Cosine, Euclidean, and Inner Product are implemented.</span>
                 </button>
             </div>
         </section>
@@ -121,6 +126,8 @@
                             Strategy: {{ $strategyLabel }}.
                             @if ($strategy === 'ann_hnsw')
                                 PostgreSQL used the HNSW index path to quickly visit likely-nearest note vectors instead of exhaustively scanning every vector.
+                            @elseif ($strategy === 'ann_ivfflat')
+                                PostgreSQL used the IVFFlat index path, where vectors are grouped into inverted lists and nearby lists are searched.
                             @else
                                 The query vector was compared with every stored note vector.
                             @endif
@@ -132,12 +139,24 @@
                             Metric: {{ $metricLabel }}.
                             @if ($metric === 'euclidean')
                                 pgvector used Euclidean distance with the <code>&lt;-&gt;</code> operator.
+                                @if ($strategy === 'ann_hnsw')
+                                    The HNSW index was built with <code>vector_l2_ops</code>.
+                                @elseif ($strategy === 'ann_ivfflat')
+                                    The IVFFlat index was built with <code>vector_l2_ops</code> and <code>lists = 10</code>.
+                                @endif
                             @elseif ($metric === 'inner_product')
                                 pgvector used negative inner product with the <code>&lt;#&gt;</code> operator. Lower returned values mean stronger inner product matches.
+                                @if ($strategy === 'ann_hnsw')
+                                    The HNSW index was built with <code>vector_ip_ops</code>.
+                                @elseif ($strategy === 'ann_ivfflat')
+                                    The IVFFlat index was built with <code>vector_ip_ops</code> and <code>lists = 10</code>.
+                                @endif
                             @else
                                 pgvector used cosine distance with the <code>&lt;=&gt;</code> operator.
                                 @if ($strategy === 'ann_hnsw')
                                     The HNSW index was built with <code>vector_cosine_ops</code>.
+                                @elseif ($strategy === 'ann_ivfflat')
+                                    The IVFFlat index was built with <code>vector_cosine_ops</code> and <code>lists = 10</code>.
                                 @endif
                             @endif
                         </p>
@@ -146,9 +165,14 @@
                         <p class="font-medium">4. Retrieval</p>
                         <p class="mt-1 text-sky-800">
                             @if ($strategy === 'ann_hnsw')
-                                HNSW retrieved approximate nearest candidates, ranked them by cosine distance, then returned the best 2 matches.
+                                HNSW retrieved approximate nearest candidates, ranked them by {{ $metricLabel }} distance, then returned the best 2 matches.
+                            @elseif ($strategy === 'ann_ivfflat')
+                                IVFFlat searched nearby vector lists, ranked candidates by {{ $metricLabel }} distance, then returned the best 2 matches.
                             @else
                                 Notes were sorted by the best metric value, then the best 2 matches were returned.
+                            @endif
+                            @if ($distanceThreshold !== null)
+                                Weak matches above distance {{ $distanceThreshold }} were filtered out.
                             @endif
                         </p>
                     </div>
@@ -160,7 +184,15 @@
     @if ($notes->isEmpty())
         <div class="rounded-lg border border-dashed border-zinc-300 bg-white p-10 text-center">
             <h2 class="text-lg font-semibold">{{ $search === '' ? 'No notes yet' : 'No matching notes' }}</h2>
-            <p class="mt-2 text-zinc-600">{{ $search === '' ? 'Add your first note and you will see it listed here.' : 'Try another title or body keyword.' }}</p>
+            <p class="mt-2 text-zinc-600">
+                @if ($search === '')
+                    Add your first note and you will see it listed here.
+                @elseif ($searchMode === 'ai' && $distanceThreshold !== null)
+                    Try another query or relax the {{ $metricLabel }} distance threshold.
+                @else
+                    Try another title or body keyword.
+                @endif
+            </p>
             @auth
                 @if ($search === '')
                     <a href="{{ route('notes.create') }}" class="mt-5 inline-flex rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800">Create note</a>

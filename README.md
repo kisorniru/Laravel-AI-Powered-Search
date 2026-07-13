@@ -21,6 +21,9 @@ This is **not RAG yet**. There is no LLM answer generation. The app currently re
   - Inner Product with `<#>`
 - ANN vector search:
   - HNSW + Cosine using a pgvector HNSW index.
+  - HNSW + Euclidean using a pgvector HNSW index.
+  - HNSW + Inner Product using a pgvector HNSW index.
+  - IVFFlat + Cosine using a pgvector IVFFlat index.
 - Learning-focused UI explanations for embedding, strategy, metric, comparison, and retrieval.
 
 ## What This System Is Called
@@ -159,7 +162,7 @@ pgvector returns negative inner product for <#>
 lower returned value = stronger inner product match
 ```
 
-### 7. ANN / HNSW + Cosine
+### 7. ANN / HNSW + Cosine, Euclidean, And Inner Product
 
 ANN means Approximate Nearest Neighbor.
 
@@ -172,14 +175,89 @@ CREATE INDEX IF NOT EXISTS notes_embedding_hnsw_cosine_index
 ON notes USING hnsw (embedding vector_cosine_ops);
 ```
 
+The HNSW Euclidean/L2 index was added with another separate migration:
+
+```sql
+CREATE INDEX IF NOT EXISTS notes_embedding_hnsw_euclidean_index
+ON notes USING hnsw (embedding vector_l2_ops);
+```
+
+The HNSW Inner Product index was added with another separate migration:
+
+```sql
+CREATE INDEX IF NOT EXISTS notes_embedding_hnsw_inner_product_index
+ON notes USING hnsw (embedding vector_ip_ops);
+```
+
 Current ANN support:
 
 | Strategy | Metric | Status |
 | --- | --- | --- |
 | ANN / HNSW | Cosine | Implemented |
-| ANN / HNSW | Euclidean | Not implemented yet |
-| ANN / HNSW | Inner Product | Not implemented yet |
-| ANN / IVFFlat | Any metric | Not implemented yet |
+| ANN / HNSW | Euclidean | Implemented |
+| ANN / HNSW | Inner Product | Implemented |
+| ANN / IVFFlat | Cosine | Implemented |
+| ANN / IVFFlat | Euclidean | Not implemented yet |
+| ANN / IVFFlat | Inner Product | Not implemented yet |
+
+The SQL still uses the selected distance operator:
+
+```sql
+ORDER BY embedding <=> ?::vector
+LIMIT 2
+```
+
+or:
+
+```sql
+ORDER BY embedding <-> ?::vector
+LIMIT 2
+```
+
+or:
+
+```sql
+ORDER BY embedding <#> ?::vector
+LIMIT 2
+```
+
+The difference is that PostgreSQL now has HNSW index paths available for cosine, Euclidean, and Inner Product vector search.
+
+### 8. ANN / IVFFlat + Cosine
+
+IVFFlat is the second ANN strategy implemented.
+
+The IVFFlat cosine index was added with a separate migration:
+
+```sql
+CREATE INDEX IF NOT EXISTS notes_embedding_ivfflat_cosine_index
+ON notes USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 10);
+```
+
+Current IVFFlat support:
+
+| Strategy | Metric | Status |
+| --- | --- | --- |
+| ANN / IVFFlat | Cosine | Implemented |
+| ANN / IVFFlat | Euclidean | Implemented |
+| ANN / IVFFlat | Inner Product | Implemented |
+
+The IVFFlat Euclidean/L2 index was added with another separate migration:
+
+```sql
+CREATE INDEX IF NOT EXISTS notes_embedding_ivfflat_euclidean_index
+ON notes USING ivfflat (embedding vector_l2_ops)
+WITH (lists = 10);
+```
+
+The IVFFlat Inner Product index was added with another separate migration:
+
+```sql
+CREATE INDEX IF NOT EXISTS notes_embedding_ivfflat_inner_product_index
+ON notes USING ivfflat (embedding vector_ip_ops)
+WITH (lists = 10);
+```
 
 The SQL still uses cosine distance:
 
@@ -188,7 +266,35 @@ ORDER BY embedding <=> ?::vector
 LIMIT 2
 ```
 
-The difference is that PostgreSQL now has an HNSW index path available for cosine vector search.
+or Euclidean distance:
+
+```sql
+ORDER BY embedding <-> ?::vector
+LIMIT 2
+```
+
+or negative inner product:
+
+```sql
+ORDER BY embedding <#> ?::vector
+LIMIT 2
+```
+
+The difference is that PostgreSQL now has IVFFlat index paths available for cosine, Euclidean, and Inner Product vector search. IVFFlat groups vectors into inverted lists, then searches nearby lists instead of exhaustively scanning every vector.
+
+### 9. Distance Thresholds
+
+Vector search now filters weak matches before returning results.
+
+Current thresholds:
+
+| Metric | Threshold | Meaning |
+| --- | --- | --- |
+| Cosine | `<= 0.85` | Hide results that are too far by cosine distance |
+| Euclidean | `<= 0.5` | Hide results that are too far by straight-line distance |
+| Inner Product | none yet | Uses negative inner product, so it needs a separate threshold rule |
+
+This means the app no longer always returns 2 notes. It returns up to 2 notes that pass the selected metric threshold.
 
 ## Backend Flow
 
@@ -231,7 +337,8 @@ the user sees a flash message
 3. User chooses a metric: Cosine, Euclidean, or Inner Product.
 4. Laravel embeds the search query.
 5. Laravel compares the query vector with stored note vectors.
-6. Laravel returns the best 2 notes.
+6. Laravel filters weak matches using the metric distance threshold.
+7. Laravel returns up to the best 2 notes.
 ```
 
 Only implemented strategy and metric combinations run. Unsupported combinations show a learning message instead of failing.
@@ -300,6 +407,30 @@ Run migrations:
 php artisan migrate
 ```
 
+Reset and seed demo users, notes, and embeddings:
+
+```bash
+php artisan migrate:refresh --seed
+```
+
+Demo accounts:
+
+| Name | Email | Password |
+| --- | --- | --- |
+| Mr. Jhon | `jhon@email.com` | `12345678` |
+| Mr. Sina | `sina@email.com` | `12345678` |
+
+The seeder always creates 40 curated Bangladesh-context notes: 20 for each user, with 10 public and 10 private notes per user. If `HUGGINGFACE_API_TOKEN` is configured, the seeder generates embeddings for these curated notes.
+
+For IVFFlat practice, you can generate extra factory notes:
+
+```env
+SEED_FACTORY_NOTES_PER_USER=500
+SEED_FACTORY_NOTES_WITH_EMBEDDINGS=false
+```
+
+This example creates 1,000 extra notes total: 500 for Mr. Jhon and 500 for Mr. Sina. Keep `SEED_FACTORY_NOTES_WITH_EMBEDDINGS=false` if you only want rows. Set it to `true` when you are ready to make embedding API calls for the generated notes.
+
 Start development:
 
 ```bash
@@ -333,29 +464,22 @@ Build frontend assets:
 npm run build
 ```
 
-Last verified state:
-
-```text
-php artisan test: 13 tests passing
-npm run build: passing
-```
+The test suite expects the configured PostgreSQL database and pgvector extension to be available.
 
 ## Learning Roadmap From Here
 
 Recommended next steps:
 
-1. Implement **ANN / HNSW + Euclidean**.
-2. Implement **ANN / HNSW + Inner Product**.
-3. Learn how to inspect query plans with `EXPLAIN`.
-4. Add **ANN / IVFFlat** after HNSW metrics are complete.
-5. Compare Exact vs HNSW vs IVFFlat behavior.
-6. Add chunking later:
+1. Learn how to inspect query plans with `EXPLAIN`.
+2. Add **ANN / IVFFlat** after HNSW metrics are complete.
+3. Compare Exact vs HNSW vs IVFFlat behavior.
+4. Add chunking later:
 
 ```text
 1 note = many chunks = many vectors
 ```
 
-7. Add RAG later:
+5. Add RAG later:
 
 ```text
 retrieve relevant chunks -> send context to LLM -> generate grounded answer
