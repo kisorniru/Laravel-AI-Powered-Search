@@ -29,6 +29,8 @@ class NoteController extends Controller
             'metric' => null,
             'metricLabel' => null,
             'distanceThreshold' => null,
+            'queryPlan' => null,
+            'queryPlanSummary' => null,
         ]);
     }
 
@@ -74,6 +76,63 @@ class NoteController extends Controller
             'metric' => $metric,
             'metricLabel' => $this->metricLabel($metric),
             'distanceThreshold' => $distanceThreshold,
+            'queryPlan' => null,
+            'queryPlanSummary' => null,
+        ]);
+    }
+
+    public function explainVectorSearch(Request $request, HuggingFaceEmbeddingService $embeddings)
+    {
+        $search = trim((string) $request->query('search', ''));
+        $strategy = (string) $request->query('strategy', 'exact');
+        $metric = (string) $request->query('metric', 'cosine');
+        $distanceThreshold = $this->distanceThreshold($metric);
+        $notes = collect();
+        $queryVectorPreview = null;
+        $queryPlan = null;
+        $queryPlanSummary = null;
+
+        if ($search === '') {
+            return redirect()->route('notes.index');
+        }
+
+        if (! $this->implementedVectorSearch($strategy, $metric)) {
+            $queryVectorStatus = 'This strategy and metric combination is not implemented yet.';
+        } elseif (! $embeddings->configured()) {
+            $queryVectorStatus = 'Add HUGGINGFACE_API_TOKEN to analyze an AI search.';
+        } else {
+            try {
+                // EXPLAIN ANALYZE needs the same query vector and SQL used by the real search.
+                $embedding = $embeddings->embed($search);
+                $queryVectorPreview = $this->vectorPreview($embedding);
+                $queryVector = $this->toVectorLiteral($embedding);
+                $notes = $this->vectorSearchResults($queryVector, $strategy, $metric, $request->user()?->id);
+                $queryPlan = $this->explainVectorSearchQuery(
+                    $queryVector,
+                    $metric,
+                    $request->user()?->id,
+                    $distanceThreshold,
+                );
+                $queryPlanSummary = $this->summarizeQueryPlan($queryPlan, $strategy);
+                $queryVectorStatus = $this->vectorSearchStatus($strategy, $metric, $distanceThreshold, $notes->count());
+            } catch (Throwable $exception) {
+                $queryVectorStatus = 'EXPLAIN ANALYZE failed: '.$exception->getMessage();
+            }
+        }
+
+        return view('notes.index', [
+            'notes' => $notes,
+            'search' => $search,
+            'searchMode' => 'ai',
+            'queryVectorPreview' => $queryVectorPreview,
+            'queryVectorStatus' => $queryVectorStatus,
+            'strategy' => $strategy,
+            'strategyLabel' => $this->strategyLabel($strategy),
+            'metric' => $metric,
+            'metricLabel' => $this->metricLabel($metric),
+            'distanceThreshold' => $distanceThreshold,
+            'queryPlan' => $queryPlan,
+            'queryPlanSummary' => $queryPlanSummary,
         ]);
     }
 
@@ -357,6 +416,19 @@ class NoteController extends Controller
 
     private function vectorSearchByOperator(string $queryVector, string $operator, ?int $userId, ?float $maxDistance)
     {
+        return $this->vectorSearchQueryByOperator($queryVector, $operator, $userId, $maxDistance)
+            ->get()
+            ->map(function (object $row): Note {
+                $note = new Note;
+                $note->forceFill((array) $row);
+                $note->exists = true;
+
+                return $note;
+            });
+    }
+
+    private function vectorSearchQueryByOperator(string $queryVector, string $operator, ?int $userId, ?float $maxDistance)
+    {
         return DB::table('notes')
             ->leftJoin('users', 'users.id', '=', 'notes.user_id')
             ->select(
@@ -382,14 +454,87 @@ class NoteController extends Controller
                 fn ($query) => $query->where('notes.user_id', $userId),
             )
             ->orderByRaw("notes.embedding {$operator} ?::vector", [$queryVector])
-            ->limit(2)
-            ->get()
-            ->map(function (object $row): Note {
-                $note = new Note;
-                $note->forceFill((array) $row);
-                $note->exists = true;
+            ->limit(2);
+    }
 
-                return $note;
-            });
+    /**
+     * Run PostgreSQL's planner and executor against the same SELECT used for retrieval.
+     * ANALYZE executes the SELECT, while BUFFERS reports cache/disk activity.
+     *
+     * @return array<int, string>
+     */
+    private function explainVectorSearchQuery(string $queryVector, string $metric, ?int $userId, ?float $maxDistance): array
+    {
+        $query = $this->vectorSearchQueryByOperator(
+            $queryVector,
+            $this->metricOperator($metric),
+            $userId,
+            $maxDistance,
+        );
+
+        $rows = DB::select(
+            'EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) '.$query->toSql(),
+            $query->getBindings(),
+        );
+
+        return array_map(function (object $row): string {
+            $columns = (array) $row;
+            $line = (string) ($columns['QUERY PLAN'] ?? reset($columns));
+
+            // Query plans may print the complete vector literal. Keep the learning UI readable.
+            return preg_replace(
+                "/'\\[[^]]+\\]'::vector/",
+                "'[384-dimensional query vector]'::vector",
+                $line,
+            ) ?? $line;
+        }, $rows);
+    }
+
+    private function metricOperator(string $metric): string
+    {
+        return match ($metric) {
+            'euclidean' => '<->',
+            'inner_product' => '<#>',
+            default => '<=>',
+        };
+    }
+
+    /**
+     * Extract the parts a learner usually checks first from the full PostgreSQL plan.
+     *
+     * @param  array<int, string>  $queryPlan
+     * @return array{planning_time: ?string, execution_time: ?string, scans: array<int, string>, indexes: array<int, string>, strategy_observation: string}
+     */
+    private function summarizeQueryPlan(array $queryPlan, string $selectedStrategy): array
+    {
+        $planText = implode("\n", $queryPlan);
+        preg_match('/Planning Time: ([0-9.]+ ms)/', $planText, $planningTime);
+        preg_match('/Execution Time: ([0-9.]+ ms)/', $planText, $executionTime);
+        preg_match_all('/(?:Index Only Scan|Index Scan|Bitmap Index Scan|Seq Scan)/', $planText, $scanMatches);
+        preg_match_all('/(?:Index Only Scan|Index Scan|Bitmap Index Scan) using ([^ ]+)/', $planText, $indexMatches);
+
+        $scans = array_values(array_unique($scanMatches[0]));
+        $indexes = array_values(array_unique($indexMatches[1]));
+        $indexText = strtolower(implode(' ', $indexes));
+
+        $strategyObservation = match ($selectedStrategy) {
+            'ann_hnsw' => str_contains($indexText, 'hnsw')
+                ? 'PostgreSQL used an HNSW index for this execution.'
+                : 'No HNSW index appears in this plan. The planner selected a different path.',
+            'ann_ivfflat' => str_contains($indexText, 'ivfflat')
+                ? 'PostgreSQL used an IVFFlat index for this execution.'
+                : 'No IVFFlat index appears in this plan. The planner selected a different path.',
+            default => str_contains($indexText, 'hnsw') || str_contains($indexText, 'ivfflat')
+                ? 'Although Exact was selected, PostgreSQL chose an ANN index path for this SQL.'
+                : 'No ANN vector index appears in this plan; PostgreSQL evaluated another path.',
+        };
+
+        return [
+            'planning_time' => $planningTime[1] ?? null,
+            'execution_time' => $executionTime[1] ?? null,
+            'scans' => $scans,
+            'indexes' => $indexes,
+            'strategy_observation' => $strategyObservation,
+        ];
     }
 }

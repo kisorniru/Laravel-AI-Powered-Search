@@ -612,6 +612,30 @@ Frontend build:
 npm run build
 ```
 
+## EXPLAIN ANALYZE দিয়ে actual query plan দেখা
+
+AI search করার পরে এখন **Run EXPLAIN ANALYZE** button দেখা যায়। এটি retrieval-এ ব্যবহৃত একই read-only `SELECT` execute করে PostgreSQL-এর actual plan দেখায়।
+
+এখানে দেখা যায়:
+
+- Planning time
+- Actual execution time
+- `Seq Scan`, `Index Scan` ইত্যাদি scan type
+- PostgreSQL আসলে কোন index ব্যবহার করেছে
+- Sanitized raw plan-এর buffer activity
+
+Raw plan-এ complete 384-dimensional query vector দেখানো হয় না। সেটি readable preview দিয়ে replace করা হয়।
+
+এই step-এর সবচেয়ে গুরুত্বপূর্ণ শিক্ষা:
+
+```text
+UI-তে আমরা একটি strategy request করি
+কিন্তু physical execution plan PostgreSQL planner select করে
+EXPLAIN ANALYZE দেখায় বাস্তবে কী execute হয়েছে
+```
+
+একই metric-এর জন্য HNSW এবং IVFFlat index দুটোই থাকলে PostgreSQL planner নিজের cost estimate অনুযায়ী যেকোনো একটি plan choose করতে পারে। তাই UI label নয়, actual index name হলো execution-এর প্রমাণ।
+
 ## গুরুত্বপূর্ণ ধারণা
 
 ### Keyword search
@@ -719,16 +743,15 @@ then later learn RAG
 
 Recommended next steps:
 
-1. `EXPLAIN` এবং `EXPLAIN ANALYZE` দিয়ে query plan দেখা।
-2. Exact vs HNSW vs IVFFlat performance compare করা।
-3. HNSW tuning শেখা।
-4. IVFFlat `lists` এবং `probes` tuning শেখা।
-5. Inner Product threshold design করা।
-6. Chunking implement করা।
-7. `note_chunks` table তৈরি করা।
-8. Chunk-level vector search করা।
-9. Retrieval result দিয়ে RAG বানানো।
-10. Queue ব্যবহার করে embedding generation background job-এ নেওয়া।
+1. Exact vs HNSW vs IVFFlat result এবং actual plan compare করা।
+2. HNSW tuning শেখা।
+3. IVFFlat `lists` এবং `probes` tuning শেখা।
+4. Inner Product threshold design করা।
+5. Chunking implement করা।
+6. `note_chunks` table তৈরি করা।
+7. Chunk-level vector search করা।
+8. Retrieval result দিয়ে RAG বানানো।
+9. Queue ব্যবহার করে embedding generation background job-এ নেওয়া।
 
 ## সবচেয়ে সংক্ষিপ্ত summary
 

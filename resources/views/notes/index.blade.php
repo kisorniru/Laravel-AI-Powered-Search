@@ -178,6 +178,56 @@
                     </div>
                 </div>
             @endif
+
+            @if ($queryVectorPreview && !$queryPlan)
+                <form method="GET" action="{{ route('notes.ai-search.explain') }}" class="mt-4 border-t border-sky-200 pt-4">
+                    <input type="hidden" name="search" value="{{ $search }}">
+                    <input type="hidden" name="strategy" value="{{ $strategy }}">
+                    <input type="hidden" name="metric" value="{{ $metric }}">
+                    <button type="submit" class="rounded-md border border-sky-300 bg-white px-4 py-2 font-medium text-sky-800 hover:bg-sky-100">
+                        Run EXPLAIN ANALYZE
+                    </button>
+                    <p class="mt-2 text-xs text-sky-800">PostgreSQL will execute the SELECT and report the actual query plan. No data is changed.</p>
+                </form>
+            @endif
+        </section>
+    @endif
+
+    @if ($queryPlan && $queryPlanSummary)
+        <section class="mb-6 border-y border-violet-200 bg-violet-50 py-5 text-sm text-violet-950">
+            <div class="mx-auto max-w-5xl px-4">
+                <p class="text-xs font-medium uppercase text-violet-700">PostgreSQL query inspection</p>
+                <h2 class="mt-1 text-lg font-semibold">EXPLAIN ANALYZE result</h2>
+                <p class="mt-2 text-violet-900">{{ $queryPlanSummary['strategy_observation'] }}</p>
+
+                <dl class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div class="border-l-2 border-violet-300 pl-3">
+                        <dt class="text-xs text-violet-700">Planning time</dt>
+                        <dd class="mt-1 font-medium">{{ $queryPlanSummary['planning_time'] ?? 'Not reported' }}</dd>
+                    </div>
+                    <div class="border-l-2 border-violet-300 pl-3">
+                        <dt class="text-xs text-violet-700">Execution time</dt>
+                        <dd class="mt-1 font-medium">{{ $queryPlanSummary['execution_time'] ?? 'Not reported' }}</dd>
+                    </div>
+                    <div class="border-l-2 border-violet-300 pl-3">
+                        <dt class="text-xs text-violet-700">Scan types</dt>
+                        <dd class="mt-1 font-medium">{{ $queryPlanSummary['scans'] ? implode(', ', $queryPlanSummary['scans']) : 'Not detected' }}</dd>
+                    </div>
+                    <div class="border-l-2 border-violet-300 pl-3">
+                        <dt class="text-xs text-violet-700">Indexes used</dt>
+                        <dd class="mt-1 break-words font-medium">{{ $queryPlanSummary['indexes'] ? implode(', ', $queryPlanSummary['indexes']) : 'None reported' }}</dd>
+                    </div>
+                </dl>
+
+                <details class="mt-5">
+                    <summary class="cursor-pointer font-medium text-violet-800">View sanitized raw query plan</summary>
+                    <pre class="mt-3 max-h-96 overflow-auto border border-violet-200 bg-white p-4 text-xs leading-5 text-zinc-800">{{ implode("\n", $queryPlan) }}</pre>
+                </details>
+
+                <p class="mt-4 text-xs text-violet-800">
+                    <strong>Important:</strong> the selected UI strategy describes your requested experiment, but PostgreSQL chooses the physical execution plan. The actual index above is the evidence.
+                </p>
+            </div>
         </section>
     @endif
 

@@ -2,7 +2,7 @@
 
 This project is a small Laravel learning app for understanding **AI-powered semantic search** step by step.
 
-It started as a simple Notes CRUD app, then gradually added embeddings, pgvector storage, regular database search, exact vector search, and ANN / HNSW vector search.
+It started as a simple Notes CRUD app, then gradually added embeddings, pgvector storage, regular database search, Exact vector search, and ANN search with HNSW and IVFFlat.
 
 This is **not RAG yet**. There is no LLM answer generation. The app currently retrieves similar notes by comparing embedding vectors.
 
@@ -24,6 +24,9 @@ This is **not RAG yet**. There is no LLM answer generation. The app currently re
   - HNSW + Euclidean using a pgvector HNSW index.
   - HNSW + Inner Product using a pgvector HNSW index.
   - IVFFlat + Cosine using a pgvector IVFFlat index.
+  - IVFFlat + Euclidean using a pgvector IVFFlat index.
+  - IVFFlat + Inner Product using a pgvector IVFFlat index.
+- PostgreSQL `EXPLAIN ANALYZE` inspection with timing, scan type, actual index, buffers, and a sanitized raw plan.
 - Learning-focused UI explanations for embedding, strategy, metric, comparison, and retrieval.
 
 ## What This System Is Called
@@ -34,7 +37,7 @@ The best name for the current system is:
 
 More technically:
 
-**A Laravel notes CRUD app with Hugging Face embeddings, PostgreSQL pgvector storage, and vector search using Exact and ANN / HNSW retrieval.**
+**A Laravel notes CRUD app with Hugging Face embeddings, PostgreSQL pgvector storage, and vector search using Exact, ANN / HNSW, and ANN / IVFFlat retrieval.**
 
 It is not RAG yet because RAG requires this extra step:
 
@@ -197,8 +200,8 @@ Current ANN support:
 | ANN / HNSW | Euclidean | Implemented |
 | ANN / HNSW | Inner Product | Implemented |
 | ANN / IVFFlat | Cosine | Implemented |
-| ANN / IVFFlat | Euclidean | Not implemented yet |
-| ANN / IVFFlat | Inner Product | Not implemented yet |
+| ANN / IVFFlat | Euclidean | Implemented |
+| ANN / IVFFlat | Inner Product | Implemented |
 
 The SQL still uses the selected distance operator:
 
@@ -296,6 +299,28 @@ Current thresholds:
 
 This means the app no longer always returns 2 notes. It returns up to 2 notes that pass the selected metric threshold.
 
+### 10. Inspect The Actual Plan With EXPLAIN ANALYZE
+
+After an AI search, the UI now offers **Run EXPLAIN ANALYZE**. It executes the same read-only vector `SELECT` and reports:
+
+- PostgreSQL planning time.
+- Actual execution time.
+- Scan types such as `Seq Scan` or `Index Scan`.
+- The actual index name selected by PostgreSQL.
+- Buffer activity in the sanitized raw plan.
+
+The full 384-dimensional query vector is removed from the displayed plan.
+
+This step reveals an important distinction:
+
+```text
+the UI selects a requested experiment
+PostgreSQL's planner selects the physical execution plan
+EXPLAIN ANALYZE provides the evidence of what actually ran
+```
+
+Because HNSW and IVFFlat indexes can exist for the same vector operator, PostgreSQL may choose a different plan than the UI label suggests. This finding will guide the upcoming strategy-comparison implementation.
+
 ## Backend Flow
 
 ### When A User Creates Or Updates A Note
@@ -333,7 +358,7 @@ the user sees a flash message
 
 ```text
 1. User types search text.
-2. User chooses a strategy: Exact or ANN / HNSW.
+2. User chooses a strategy: Exact, ANN / HNSW, or ANN / IVFFlat.
 3. User chooses a metric: Cosine, Euclidean, or Inner Product.
 4. Laravel embeds the search query.
 5. Laravel compares the query vector with stored note vectors.
@@ -470,16 +495,15 @@ The test suite expects the configured PostgreSQL database and pgvector extension
 
 Recommended next steps:
 
-1. Learn how to inspect query plans with `EXPLAIN`.
-2. Add **ANN / IVFFlat** after HNSW metrics are complete.
-3. Compare Exact vs HNSW vs IVFFlat behavior.
-4. Add chunking later:
+1. Compare Exact vs HNSW vs IVFFlat results and actual execution plans.
+2. Learn HNSW `ef_search` and IVFFlat `probes` tuning.
+3. Add chunking later:
 
 ```text
 1 note = many chunks = many vectors
 ```
 
-5. Add RAG later:
+4. Add RAG later:
 
 ```text
 retrieve relevant chunks -> send context to LLM -> generate grounded answer

@@ -575,6 +575,36 @@ class NoteCrudTest extends TestCase
             && $request['inputs'] === 'database');
     }
 
+    public function test_an_ai_search_query_can_be_inspected_with_explain_analyze(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([1.0, 0.0, 0.0]), 200),
+        ]);
+
+        $note = Note::create([
+            'title' => 'Explain vector search',
+            'body' => 'Inspect how PostgreSQL executes a cosine vector query.',
+            'is_public' => true,
+        ]);
+
+        $this->storeEmbedding($note, [1.0, 0.0, 0.0]);
+
+        $this->get('/notes/ai-search/explain?search=database&strategy=ann_hnsw&metric=cosine')
+            ->assertOk()
+            ->assertSee('EXPLAIN ANALYZE result')
+            ->assertSee('Planning time')
+            ->assertSee('Execution time')
+            ->assertSee('Scan types')
+            ->assertSee('Indexes used')
+            ->assertSee('View sanitized raw query plan')
+            ->assertDontSee('[1,0,0,0,0,0');
+
+        Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
+            && $request['inputs'] === 'database');
+    }
+
     private function fakeEmbedding(array $start = []): array
     {
         return array_pad($start, 384, 0.0);

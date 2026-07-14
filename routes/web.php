@@ -20,6 +20,7 @@ Route::post('/logout', [AuthController::class, 'logout'])
     ->name('logout');
 
 Route::get('/notes/ai-search', [NoteController::class, 'vectorSearch'])->name('notes.ai-search');
+Route::get('/notes/ai-search/explain', [NoteController::class, 'explainVectorSearch'])->name('notes.ai-search.explain');
 Route::resource('notes', NoteController::class)->only('index');
 
 Route::middleware('auth')->group(function (): void {
