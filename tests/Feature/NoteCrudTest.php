@@ -605,6 +605,46 @@ class NoteCrudTest extends TestCase
             && $request['inputs'] === 'database');
     }
 
+    public function test_vector_search_strategies_can_be_compared_with_one_query_embedding(): void
+    {
+        config(['services.huggingface.token' => 'fake-token']);
+
+        Http::fake([
+            'router.huggingface.co/*' => Http::response($this->fakeEmbedding([1.0, 0.0, 0.0]), 200),
+        ]);
+
+        $closest = Note::create([
+            'title' => 'Closest comparison note',
+            'body' => 'The first result shared by the comparison experiments.',
+            'is_public' => true,
+        ]);
+
+        $second = Note::create([
+            'title' => 'Second comparison note',
+            'body' => 'The second result shared by the comparison experiments.',
+            'is_public' => true,
+        ]);
+
+        $this->storeEmbedding($closest, [1.0, 0.0, 0.0]);
+        $this->storeEmbedding($second, [0.8, 0.2, 0.0]);
+
+        $this->get('/notes/ai-search/compare?search=database&metric=cosine')
+            ->assertOk()
+            ->assertSee('Strategy comparison with Cosine')
+            ->assertSee('Exact')
+            ->assertSee('ANN / HNSW')
+            ->assertSee('ANN / IVFFlat')
+            ->assertSee('Actual PostgreSQL plan')
+            ->assertSee('Closest comparison note')
+            ->assertSee('Second comparison note')
+            ->assertSee('Timings are educational samples')
+            ->assertDontSee('[1,0,0,0,0,0');
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer fake-token')
+            && $request['inputs'] === 'database');
+    }
+
     private function fakeEmbedding(array $start = []): array
     {
         return array_pad($start, 384, 0.0);

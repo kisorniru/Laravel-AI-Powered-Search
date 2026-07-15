@@ -21,6 +21,7 @@ Route::post('/logout', [AuthController::class, 'logout'])
 
 Route::get('/notes/ai-search', [NoteController::class, 'vectorSearch'])->name('notes.ai-search');
 Route::get('/notes/ai-search/explain', [NoteController::class, 'explainVectorSearch'])->name('notes.ai-search.explain');
+Route::get('/notes/ai-search/compare', [NoteController::class, 'compareVectorSearch'])->name('notes.ai-search.compare');
 Route::resource('notes', NoteController::class)->only('index');
 
 Route::middleware('auth')->group(function (): void {

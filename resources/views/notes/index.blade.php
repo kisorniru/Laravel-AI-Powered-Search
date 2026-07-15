@@ -28,12 +28,14 @@
         </div>
         @if ($search !== '')
             <p class="mt-2 text-sm text-zinc-500">
-                @if ($searchMode === 'ai')
+                @if ($searchMode === 'comparison')
+                    Comparing Exact, HNSW, and IVFFlat for "{{ $search }}".
+                @elseif ($searchMode === 'ai')
                     Showing {{ $strategyLabel }} vector search matches for "{{ $search }}".
                 @else
                     Showing database matches for "{{ $search }}".
                 @endif
-                @if ($searchMode === 'ai')
+                @if (in_array($searchMode, ['ai', 'comparison'], true))
                     {{ $metricLabel }} is used and only the best 2 notes are returned.
                 @endif
             </p>
@@ -109,7 +111,7 @@
         </section>
     </div>
 
-    @if ($queryVectorStatus)
+    @if ($queryVectorStatus && $searchMode !== 'comparison')
         <section class="mb-6 rounded-lg border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
             <h2 class="font-semibold">How AI search worked in the background</h2>
             <p class="mt-1">{{ $queryVectorStatus }}</p>
@@ -179,16 +181,27 @@
                 </div>
             @endif
 
-            @if ($queryVectorPreview && !$queryPlan)
-                <form method="GET" action="{{ route('notes.ai-search.explain') }}" class="mt-4 border-t border-sky-200 pt-4">
-                    <input type="hidden" name="search" value="{{ $search }}">
-                    <input type="hidden" name="strategy" value="{{ $strategy }}">
-                    <input type="hidden" name="metric" value="{{ $metric }}">
-                    <button type="submit" class="rounded-md border border-sky-300 bg-white px-4 py-2 font-medium text-sky-800 hover:bg-sky-100">
-                        Run EXPLAIN ANALYZE
-                    </button>
-                    <p class="mt-2 text-xs text-sky-800">PostgreSQL will execute the SELECT and report the actual query plan. No data is changed.</p>
-                </form>
+            @if ($queryVectorPreview)
+                <div class="mt-4 flex flex-col gap-3 border-t border-sky-200 pt-4 sm:flex-row sm:items-start">
+                    @if (!$queryPlan)
+                        <form method="GET" action="{{ route('notes.ai-search.explain') }}">
+                            <input type="hidden" name="search" value="{{ $search }}">
+                            <input type="hidden" name="strategy" value="{{ $strategy }}">
+                            <input type="hidden" name="metric" value="{{ $metric }}">
+                            <button type="submit" class="rounded-md border border-sky-300 bg-white px-4 py-2 font-medium text-sky-800 hover:bg-sky-100">
+                                Run EXPLAIN ANALYZE
+                            </button>
+                        </form>
+                    @endif
+                    <form method="GET" action="{{ route('notes.ai-search.compare') }}">
+                        <input type="hidden" name="search" value="{{ $search }}">
+                        <input type="hidden" name="metric" value="{{ $metric }}">
+                        <button type="submit" class="rounded-md bg-sky-800 px-4 py-2 font-medium text-white hover:bg-sky-700">
+                            Compare strategies
+                        </button>
+                    </form>
+                </div>
+                <p class="mt-2 text-xs text-sky-800">These inspections execute read-only SELECT queries. No data is changed.</p>
             @endif
         </section>
     @endif
@@ -230,6 +243,78 @@
             </div>
         </section>
     @endif
+
+    @if ($searchMode === 'comparison' && $queryVectorStatus && !$strategyComparison)
+        <section class="mb-6 border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+            <h2 class="font-semibold">Strategy comparison could not run</h2>
+            <p class="mt-1">{{ $queryVectorStatus }}</p>
+        </section>
+    @endif
+
+    @if ($strategyComparison)
+        <section class="mb-6 text-sm text-zinc-950">
+            <div class="border-y border-emerald-200 bg-emerald-50 py-5">
+                <p class="text-xs font-medium uppercase text-emerald-700">Side-by-side experiment</p>
+                <h2 class="mt-1 text-xl font-semibold">Strategy comparison with {{ $metricLabel }}</h2>
+                <p class="mt-2 max-w-3xl text-emerald-900">{{ $queryVectorStatus }}</p>
+                <code class="mt-3 block max-w-2xl border border-emerald-200 bg-white p-3 text-xs text-zinc-700">{{ $queryVectorPreview }}</code>
+                <p class="mt-3 text-xs text-emerald-800">Exact disables index scans for an exhaustive baseline. ANN rows report the real plan PostgreSQL selected; HNSW or IVFFlat is not claimed unless its index appears in EXPLAIN ANALYZE.</p>
+            </div>
+
+            <div class="mt-5 overflow-x-auto border border-zinc-200 bg-white">
+                <table class="min-w-[900px] w-full text-left align-top">
+                    <thead class="border-b border-zinc-200 bg-zinc-100 text-xs text-zinc-600">
+                        <tr>
+                            <th class="px-4 py-3 font-medium">Requested strategy</th>
+                            <th class="px-4 py-3 font-medium">Actual PostgreSQL plan</th>
+                            <th class="px-4 py-3 font-medium">Timing</th>
+                            <th class="px-4 py-3 font-medium">Top results</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-zinc-200">
+                        @foreach ($strategyComparison as $comparison)
+                            <tr>
+                                <td class="w-44 px-4 py-4 align-top">
+                                    <p class="font-semibold">{{ $comparison['label'] }}</p>
+                                    <p class="mt-1 text-xs text-zinc-500">Requested experiment</p>
+                                </td>
+                                <td class="max-w-sm px-4 py-4 align-top">
+                                    <p>{{ $comparison['summary']['strategy_observation'] }}</p>
+                                    <dl class="mt-3 space-y-1 text-xs text-zinc-600">
+                                        <div><dt class="inline font-medium">Scans:</dt> <dd class="inline">{{ $comparison['summary']['scans'] ? implode(', ', $comparison['summary']['scans']) : 'Not detected' }}</dd></div>
+                                        <div><dt class="inline font-medium">Indexes:</dt> <dd class="inline break-all">{{ $comparison['summary']['indexes'] ? implode(', ', $comparison['summary']['indexes']) : 'None reported' }}</dd></div>
+                                    </dl>
+                                    <details class="mt-3 text-xs">
+                                        <summary class="cursor-pointer font-medium text-zinc-700">Raw plan</summary>
+                                        <pre class="mt-2 max-h-64 max-w-md overflow-auto border border-zinc-200 bg-zinc-50 p-3 leading-5">{{ implode("\n", $comparison['plan']) }}</pre>
+                                    </details>
+                                </td>
+                                <td class="w-40 px-4 py-4 align-top">
+                                    <p><span class="text-xs text-zinc-500">Execution</span><br><strong>{{ $comparison['summary']['execution_time'] ?? 'Not reported' }}</strong></p>
+                                    <p class="mt-3"><span class="text-xs text-zinc-500">Planning</span><br><strong>{{ $comparison['summary']['planning_time'] ?? 'Not reported' }}</strong></p>
+                                </td>
+                                <td class="min-w-64 px-4 py-4 align-top">
+                                    @forelse ($comparison['results'] as $result)
+                                        <div class="{{ !$loop->first ? 'mt-3 border-t border-zinc-100 pt-3' : '' }}">
+                                            <a href="{{ route('notes.show', $result) }}" class="font-medium hover:underline">{{ $loop->iteration }}. {{ $result->title }}</a>
+                                            <p class="mt-1 text-xs text-zinc-500">
+                                                {{ $metric === 'inner_product' ? 'Negative inner product' : $metricLabel.' distance' }}:
+                                                {{ number_format((float) $result->vector_distance, 6) }}
+                                            </p>
+                                        </div>
+                                    @empty
+                                        <p class="text-zinc-500">No result passed the current threshold.</p>
+                                    @endforelse
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+
+            <p class="mt-3 text-xs text-zinc-500">Timings are educational samples, not a formal benchmark. Cache state, dataset size, concurrent work, and execution order can affect them.</p>
+        </section>
+    @else
 
     @if ($notes->isEmpty())
         <div class="rounded-lg border border-dashed border-zinc-300 bg-white p-10 text-center">
@@ -308,6 +393,7 @@
                 {{ $notes->links() }}
             </div>
         @endif
+    @endif
     @endif
 
     <script>

@@ -31,6 +31,7 @@ class NoteController extends Controller
             'distanceThreshold' => null,
             'queryPlan' => null,
             'queryPlanSummary' => null,
+            'strategyComparison' => null,
         ]);
     }
 
@@ -78,6 +79,7 @@ class NoteController extends Controller
             'distanceThreshold' => $distanceThreshold,
             'queryPlan' => null,
             'queryPlanSummary' => null,
+            'strategyComparison' => null,
         ]);
     }
 
@@ -109,6 +111,7 @@ class NoteController extends Controller
                 $notes = $this->vectorSearchResults($queryVector, $strategy, $metric, $request->user()?->id);
                 $queryPlan = $this->explainVectorSearchQuery(
                     $queryVector,
+                    $strategy,
                     $metric,
                     $request->user()?->id,
                     $distanceThreshold,
@@ -133,6 +136,75 @@ class NoteController extends Controller
             'distanceThreshold' => $distanceThreshold,
             'queryPlan' => $queryPlan,
             'queryPlanSummary' => $queryPlanSummary,
+            'strategyComparison' => null,
+        ]);
+    }
+
+    public function compareVectorSearch(Request $request, HuggingFaceEmbeddingService $embeddings)
+    {
+        $search = trim((string) $request->query('search', ''));
+        $metric = (string) $request->query('metric', 'cosine');
+        $distanceThreshold = $this->distanceThreshold($metric);
+        $strategyComparison = null;
+        $queryVectorPreview = null;
+        $comparisonStatus = null;
+
+        if ($search === '') {
+            return redirect()->route('notes.index');
+        }
+
+        if (! in_array($metric, ['cosine', 'euclidean', 'inner_product'], true)) {
+            $comparisonStatus = 'This metric is not implemented yet.';
+        } elseif (! $embeddings->configured()) {
+            $comparisonStatus = 'Add HUGGINGFACE_API_TOKEN to compare vector search strategies.';
+        } else {
+            try {
+                // Embed once so every strategy receives the exact same query vector.
+                $embedding = $embeddings->embed($search);
+                $queryVectorPreview = $this->vectorPreview($embedding);
+                $queryVector = $this->toVectorLiteral($embedding);
+
+                $strategyComparison = collect(['exact', 'ann_hnsw', 'ann_ivfflat'])
+                    ->map(function (string $strategy) use ($queryVector, $metric, $request, $distanceThreshold): array {
+                        $notes = $this->vectorSearchResults($queryVector, $strategy, $metric, $request->user()?->id);
+                        $queryPlan = $this->explainVectorSearchQuery(
+                            $queryVector,
+                            $strategy,
+                            $metric,
+                            $request->user()?->id,
+                            $distanceThreshold,
+                        );
+
+                        return [
+                            'strategy' => $strategy,
+                            'label' => $this->strategyLabel($strategy),
+                            'results' => $notes,
+                            'plan' => $queryPlan,
+                            'summary' => $this->summarizeQueryPlan($queryPlan, $strategy),
+                        ];
+                    })
+                    ->all();
+
+                $comparisonStatus = 'The query was embedded once, then the same vector and metric were used for all three strategy experiments.';
+            } catch (Throwable $exception) {
+                $comparisonStatus = 'Strategy comparison failed: '.$exception->getMessage();
+            }
+        }
+
+        return view('notes.index', [
+            'notes' => collect(),
+            'search' => $search,
+            'searchMode' => 'comparison',
+            'queryVectorPreview' => $queryVectorPreview,
+            'queryVectorStatus' => $comparisonStatus,
+            'strategy' => null,
+            'strategyLabel' => 'Strategy comparison',
+            'metric' => $metric,
+            'metricLabel' => $this->metricLabel($metric),
+            'distanceThreshold' => $distanceThreshold,
+            'queryPlan' => null,
+            'queryPlanSummary' => null,
+            'strategyComparison' => $strategyComparison,
         ]);
     }
 
@@ -295,7 +367,10 @@ class NoteController extends Controller
             };
         }
 
-        return $this->exactSearch($queryVector, $metric, $userId, $this->distanceThreshold($metric));
+        // Disabling index scans makes the Exact experiment compare every eligible vector.
+        return $this->withExactPlanner(function () use ($queryVector, $metric, $userId) {
+            return $this->exactSearch($queryVector, $metric, $userId, $this->distanceThreshold($metric));
+        });
     }
 
     private function exactSearch(string $queryVector, string $metric, ?int $userId, ?float $maxDistance)
@@ -463,19 +538,25 @@ class NoteController extends Controller
      *
      * @return array<int, string>
      */
-    private function explainVectorSearchQuery(string $queryVector, string $metric, ?int $userId, ?float $maxDistance): array
+    private function explainVectorSearchQuery(string $queryVector, string $strategy, string $metric, ?int $userId, ?float $maxDistance): array
     {
-        $query = $this->vectorSearchQueryByOperator(
-            $queryVector,
-            $this->metricOperator($metric),
-            $userId,
-            $maxDistance,
-        );
+        $runExplain = function () use ($queryVector, $metric, $userId, $maxDistance): array {
+            $query = $this->vectorSearchQueryByOperator(
+                $queryVector,
+                $this->metricOperator($metric),
+                $userId,
+                $maxDistance,
+            );
 
-        $rows = DB::select(
-            'EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) '.$query->toSql(),
-            $query->getBindings(),
-        );
+            return DB::select(
+                'EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) '.$query->toSql(),
+                $query->getBindings(),
+            );
+        };
+
+        $rows = $strategy === 'exact'
+            ? $this->withExactPlanner($runExplain)
+            : $runExplain();
 
         return array_map(function (object $row): string {
             $columns = (array) $row;
@@ -488,6 +569,22 @@ class NoteController extends Controller
                 $line,
             ) ?? $line;
         }, $rows);
+    }
+
+    private function withExactPlanner(callable $callback): mixed
+    {
+        return DB::transaction(function () use ($callback) {
+            DB::statement('SET LOCAL enable_indexscan TO off');
+            DB::statement('SET LOCAL enable_bitmapscan TO off');
+
+            try {
+                return $callback();
+            } finally {
+                // Reset explicitly because tests may already have an outer transaction.
+                DB::statement('SET LOCAL enable_indexscan TO default');
+                DB::statement('SET LOCAL enable_bitmapscan TO default');
+            }
+        });
     }
 
     private function metricOperator(string $metric): string

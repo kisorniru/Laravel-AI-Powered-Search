@@ -29,6 +29,46 @@ class HuggingFaceEmbeddingService
         return $this->normalizeEmbedding($response->json());
     }
 
+    /**
+     * Embed several texts in one HTTP request. Hugging Face accepts string arrays
+     * for feature extraction, which keeps benchmark seeding practical.
+     *
+     * @param  array<int, string>  $texts
+     * @return array<int, array<int, float>>
+     */
+    public function embedMany(array $texts): array
+    {
+        if ($texts === []) {
+            return [];
+        }
+
+        $response = $this->client()->post($this->endpoint(), [
+            'inputs' => array_values($texts),
+            'options' => [
+                'wait_for_model' => true,
+            ],
+        ]);
+
+        if ($response->failed()) {
+            throw new RuntimeException('Hugging Face batch embedding request failed: '.$response->body());
+        }
+
+        $payload = $response->json();
+
+        if (count($texts) === 1) {
+            return [$this->normalizeEmbedding($payload)];
+        }
+
+        if (! is_array($payload) || count($payload) !== count($texts)) {
+            throw new RuntimeException('Hugging Face batch response did not match the number of input texts.');
+        }
+
+        return array_map(
+            fn (mixed $embedding): array => $this->normalizeEmbedding($embedding),
+            $payload,
+        );
+    }
+
     private function client(): PendingRequest
     {
         if (! $this->configured()) {

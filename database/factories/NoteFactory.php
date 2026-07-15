@@ -21,11 +21,33 @@ class NoteFactory extends Factory
     public function definition(): array
     {
         $topic = fake()->randomElement($this->topics());
+        $reference = fake()->unique()->numberBetween(10000000, 99999999);
+        $location = fake()->randomElement($this->locations());
+        $recordedAt = fake()->dateTimeBetween('-3 years', 'now');
+        $sentences = collect($topic['bodies'])
+            ->flatMap(fn (string $body): array => preg_split('/(?<=[.!?])\s+/', $body) ?: [])
+            ->filter()
+            ->unique()
+            ->shuffle()
+            ->take(fake()->numberBetween(2, 4))
+            ->values();
+
+        $sentences->push(fake()->randomElement($this->contextSentences())([
+            'location' => $location,
+            'date' => $recordedAt->format('d F Y'),
+            'time' => $recordedAt->format('g:i A'),
+            'companion' => fake()->randomElement($this->companions()),
+            'weather' => fake()->randomElement($this->weatherConditions()),
+            'transport' => fake()->randomElement($this->transportOptions()),
+            'amount' => fake()->numberBetween(80, 15000),
+        ]));
+        $sentences->push(fake()->randomElement($this->followUpSentences()));
+        $sentences->push("Diary reference BD-{$reference} was recorded for this specific event.");
 
         return [
             'user_id' => User::factory(),
-            'title' => $topic['title'],
-            'body' => fake()->randomElement($topic['bodies']),
+            'title' => "{$topic['title']} - {$location} #BD-{$reference}",
+            'body' => $sentences->implode(' '),
             'is_public' => fake()->boolean(65),
         ];
     }
@@ -130,6 +152,164 @@ class NoteFactory extends Factory
                     'A small badminton match happened on the lane after dinner. The children kept score on a piece of paper.',
                 ],
             ],
+            [
+                'title' => 'Mobile banking and bills',
+                'bodies' => [
+                    'Paid the electricity bill through bKash and saved the transaction number. The internet bill is still due next week.',
+                    'Sent money to the village using Nagad before calling home. Ammu confirmed that the transfer arrived safely.',
+                    'The mobile recharge offer was useful, but I need to review the monthly spending before making another payment.',
+                ],
+            ],
+            [
+                'title' => 'Doctor and pharmacy visit',
+                'bodies' => [
+                    'Visited the local clinic for a regular checkup and carried the previous prescription. The doctor advised more walking and water.',
+                    'The pharmacy had the blood pressure medicine, but one brand was unavailable. I checked the dosage before buying an alternative.',
+                    'Booked a diagnostic test for Saturday morning and kept the receipt with the medical reports.',
+                ],
+            ],
+            [
+                'title' => 'School and exam preparation',
+                'bodies' => [
+                    'The student revised mathematics and English before the school exam. A short routine made the evening study easier.',
+                    'Collected the admission form and checked the required photographs, certificates, and application deadline.',
+                    'The coaching class moved to Friday because the model test starts next week. Everyone received a new practice sheet.',
+                ],
+            ],
+            [
+                'title' => 'Rain and flood update',
+                'bodies' => [
+                    'Continuous rain caused waterlogging on several Dhaka roads. Commuters checked traffic updates before leaving home.',
+                    'The river water rose near the village after days of rain. The family moved important documents and dry food upstairs.',
+                    'A weather warning mentioned heavy rain in Chittagong and Sylhet. The weekend travel plan may need to change.',
+                ],
+            ],
+            [
+                'title' => 'Village farming news',
+                'bodies' => [
+                    'Farmers prepared the field for aman rice after the rain. Fertilizer price and irrigation cost were the main concerns.',
+                    'The vegetable garden produced eggplant, chili, and bottle gourd. Some vegetables will be sent to relatives in town.',
+                    'Harvest workers started early before the midday heat. The family plans to store part of the rice for the year.',
+                ],
+            ],
+            [
+                'title' => 'Freelancing work log',
+                'bodies' => [
+                    'Finished a small website update for an overseas client and submitted the work before midnight.',
+                    'The internet connection dropped during a video meeting, so I sent the project update and screenshots by email.',
+                    'Practiced Laravel and JavaScript after completing client revisions. The next goal is improving database query performance.',
+                ],
+            ],
+            [
+                'title' => 'House rent and utilities',
+                'bodies' => [
+                    'Paid the monthly house rent and asked the landlord for a receipt. The water bill will be shared with the other flat.',
+                    'The electrician checked the ceiling fan and replaced a damaged switch. I added the repair cost to the household budget.',
+                    'Looked at a small apartment near the metro station, but the advance payment and service charge were too high.',
+                ],
+            ],
+            [
+                'title' => 'Online order and courier',
+                'bodies' => [
+                    'Tracked an online book order that reached the local courier hub. Delivery should happen before the weekend.',
+                    'The clothing parcel had the wrong size, so I contacted customer support and requested an exchange.',
+                    'Sent homemade food to a relative through a same-day delivery service and shared the rider number.',
+                ],
+            ],
+            [
+                'title' => 'Community and mosque activity',
+                'bodies' => [
+                    'Neighbors discussed cleaning the lane and repairing the streetlight after the evening prayer.',
+                    'The mosque committee collected donations for families affected by flooding and prepared food packages.',
+                    'A community meeting planned security during the Eid holiday when many residents will travel home.',
+                ],
+            ],
+            [
+                'title' => 'Garment factory commute',
+                'bodies' => [
+                    'Workers waited for the factory bus early in the morning near Savar. Traffic increased around the industrial area.',
+                    'The production team discussed an urgent shipment and checked the quality report before packing garments.',
+                    'Heavy rain delayed the return trip from Gazipur, and many buses were crowded after the factory shift ended.',
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function locations(): array
+    {
+        return [
+            'Mirpur', 'Uttara', 'Dhanmondi', 'Mohakhali', 'Motijheel', 'Farmgate',
+            'Gulshan', 'Banani', 'Old Dhaka', 'Savar', 'Gazipur', 'Narayanganj',
+            'Chittagong', 'Sylhet', 'Rajshahi', 'Khulna', 'Barishal', 'Rangpur',
+            'Mymensingh', 'Cumilla', 'Bogura', 'Coxs Bazar', 'Jashore', 'Noakhali',
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function companions(): array
+    {
+        return [
+            'a family member', 'an old friend', 'a colleague', 'a neighbor',
+            'a cousin', 'a local shopkeeper', 'a classmate', 'the building caretaker',
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function weatherConditions(): array
+    {
+        return [
+            'clear and warm', 'humid with light rain', 'cloudy', 'windy after rain',
+            'very hot', 'cool and comfortable', 'foggy in the morning', 'stormy',
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function transportOptions(): array
+    {
+        return [
+            'a local bus', 'the metro rail', 'a CNG', 'a rickshaw',
+            'a ride-sharing bike', 'a train', 'a launch', 'walking',
+        ];
+    }
+
+    /**
+     * @return array<int, callable(array{location: string, date: string, time: string, companion: string, weather: string, transport: string, amount: int}): string>
+     */
+    private function contextSentences(): array
+    {
+        return [
+            fn (array $context): string => "This happened in {$context['location']} on {$context['date']} at {$context['time']} while the weather was {$context['weather']}.",
+            fn (array $context): string => "I discussed the details with {$context['companion']} and estimated the related cost at Tk {$context['amount']}.",
+            fn (array $context): string => "Travel through {$context['location']} was by {$context['transport']}, and the conditions were {$context['weather']}.",
+            fn (array $context): string => "On {$context['date']}, {$context['companion']} helped confirm the plan before the {$context['time']} deadline.",
+            fn (array $context): string => "The activity in {$context['location']} cost about Tk {$context['amount']} and required travel by {$context['transport']}.",
+            fn (array $context): string => "The {$context['weather']} weather changed the original plan, so I coordinated with {$context['companion']}.",
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function followUpSentences(): array
+    {
+        return [
+            'The next step is to confirm the schedule and keep the necessary phone numbers ready.',
+            'I should compare the available options again before making the final decision.',
+            'A receipt and a short written record should be kept for the monthly budget.',
+            'I need to call the family in the evening and share the latest update.',
+            'The plan should be reviewed tomorrow in case the price or weather changes.',
+            'I added a reminder to check the result before the end of the week.',
+            'The remaining task is to collect the documents and verify every detail.',
+            'I will avoid the busiest hour and leave additional time for traffic.',
         ];
     }
 }

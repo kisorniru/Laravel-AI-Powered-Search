@@ -493,27 +493,32 @@ IVFFlat শেখার জন্য data বেশি দরকার।
 
 তাই factory যোগ করা হয়েছে।
 
-Extra factory notes generate করতে `.env` এ ব্যবহার করা যায়:
+ANN speed, timing এবং recall practice-এর জন্য benchmark seed default হিসেবে enable করা হয়েছে:
 
 ```env
-SEED_FACTORY_NOTES_PER_USER=500
-SEED_FACTORY_NOTES_WITH_EMBEDDINGS=false
+SEED_FACTORY_NOTES_PER_USER=2500
+SEED_FACTORY_NOTES_WITH_EMBEDDINGS=true
+SEED_EMBEDDING_BATCH_SIZE=32
 ```
 
-এতে total 1000 extra notes তৈরি হবে:
+এতে total 5000 factory notes তৈরি হবে:
 
 ```text
-500 for Mr. Jhon
-500 for Mr. Sina
+2500 for Mr. Jhon
+2500 for Mr. Sina
 ```
 
-যদি embedding-ও generate করতে চান:
+এর সঙ্গে আগের 40টি curated note-ও থাকবে। Factory প্রতিটি note-এর জন্য আলাদা title এবং narrative তৈরি করে। 20টি Bangladesh-context topic family-এর সঙ্গে location, date, time, companion, weather, transport, cost, follow-up action এবং unique diary reference combine করা হয়।
 
-```env
-SEED_FACTORY_NOTES_WITH_EMBEDDINGS=true
-```
+হাজার হাজার note-এর জন্য একেকটি করে API call করা হয় না। Seeder:
 
-কিন্তু মনে রাখতে হবে, এতে Hugging Face API call অনেক বেশি হবে।
+1. প্রত্যেক factory note-এর জন্য genuinely different text তৈরি করে।
+2. Unique text গুলো batch আকারে Hugging Face-এ পাঠায়।
+3. প্রত্যেক note-এর জন্য model থেকে পাওয়া real embedding store করে।
+4. Provider বড় payload reject করলে batch ছোট করে retry করে।
+5. সব embedding store হওয়ার পরে HNSW ও IVFFlat index rebuild করে এবং `ANALYZE notes` চালায়।
+
+Batching HTTP overhead কমায়, কিন্তু 5000টি genuinely different note-এর জন্য model-কে 5000টি embedding calculate করতে হবে। তাই seeding কয়েক মিনিট সময় নিতে পারে এবং Hugging Face rate limit-এর ওপর নির্ভর করবে। শুধু row দরকার হলে `SEED_FACTORY_NOTES_WITH_EMBEDDINGS=false` এবং শুধু curated note দরকার হলে `SEED_FACTORY_NOTES_PER_USER=0` ব্যবহার করা যাবে।
 
 ## Local setup
 
@@ -636,6 +641,37 @@ EXPLAIN ANALYZE দেখায় বাস্তবে কী execute হয়ে�
 
 একই metric-এর জন্য HNSW এবং IVFFlat index দুটোই থাকলে PostgreSQL planner নিজের cost estimate অনুযায়ী যেকোনো একটি plan choose করতে পারে। তাই UI label নয়, actual index name হলো execution-এর প্রমাণ।
 
+## Exact, HNSW এবং IVFFlat strategy comparison
+
+AI search-এর পরে **Compare strategies** ব্যবহার করলে query একবারই embedding হয়। তারপর একই vector, metric, visibility rule, threshold এবং result limit দিয়ে তিনটি experiment run হয়:
+
+```text
+Exact
+ANN / HNSW
+ANN / IVFFlat
+```
+
+Comparison table-এ দেখা যায়:
+
+- Requested strategy
+- PostgreSQL-এর actual scan type এবং index
+- Planning এবং execution time
+- প্রত্যেক experiment-এর top 2 notes ও metric value
+- Sanitized raw plan
+
+Exact baseline-এর সময় short transaction-এর মধ্যে index scan এবং bitmap scan disable করা হয়। তাই eligible vector গুলো exhaustively evaluate হয়।
+
+HNSW এবং IVFFlat-এর জন্য গুরুত্বপূর্ণ limitation:
+
+```text
+একই operator-এর compatible HNSW এবং IVFFlat index দুটো থাকলে
+core PostgreSQL-এ নির্দিষ্ট একটি index force করার built-in hint নেই।
+```
+
+তাই ANN row-এ requested label-এর পাশাপাশি PostgreSQL আসলে যে index choose করেছে সেটাই দেখানো হয়।
+
+Timing গুলো learning sample, formal benchmark নয়। Cache state, dataset size, concurrent work এবং execution order timing বদলাতে পারে।
+
 ## গুরুত্বপূর্ণ ধারণা
 
 ### Keyword search
@@ -743,9 +779,9 @@ then later learn RAG
 
 Recommended next steps:
 
-1. Exact vs HNSW vs IVFFlat result এবং actual plan compare করা।
-2. HNSW tuning শেখা।
-3. IVFFlat `lists` এবং `probes` tuning শেখা।
+1. HNSW tuning শেখা।
+2. IVFFlat `lists` এবং `probes` tuning শেখা।
+3. বড় embedded dataset দিয়ে repeatable benchmark design করা।
 4. Inner Product threshold design করা।
 5. Chunking implement করা।
 6. `note_chunks` table তৈরি করা।

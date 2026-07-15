@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\HuggingFaceEmbeddingService;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -253,7 +254,11 @@ class DatabaseSeeder extends Seeder
             }
         }
 
-        $this->embedNotes($notesToEmbed);
+        $embeddedCount = $this->embedNotes($notesToEmbed);
+
+        if ($embeddedCount > 0) {
+            $this->rebuildVectorIndexes();
+        }
     }
 
     private function seedNotesFor(User $user, array $notes): array
@@ -269,7 +274,7 @@ class DatabaseSeeder extends Seeder
      */
     private function seedFactoryNotes(array $users)
     {
-        $countPerUser = max(0, (int) env('SEED_FACTORY_NOTES_PER_USER', 0));
+        $countPerUser = max(0, (int) env('SEED_FACTORY_NOTES_PER_USER', 2500));
 
         if ($countPerUser === 0) {
             return collect();
@@ -285,36 +290,107 @@ class DatabaseSeeder extends Seeder
 
     private function shouldEmbedFactoryNotes(): bool
     {
-        return filter_var(env('SEED_FACTORY_NOTES_WITH_EMBEDDINGS', false), FILTER_VALIDATE_BOOL);
+        return filter_var(env('SEED_FACTORY_NOTES_WITH_EMBEDDINGS', true), FILTER_VALIDATE_BOOL);
     }
 
-    private function embedNotes(iterable $notes): void
+    private function embedNotes(iterable $notes): int
     {
         $embeddings = app(HuggingFaceEmbeddingService::class);
 
         if (! $embeddings->configured()) {
             $this->command?->warn('Seed notes created without embeddings because HUGGINGFACE_API_TOKEN is not configured.');
 
-            return;
+            return 0;
         }
 
-        foreach ($notes as $note) {
+        $notes = collect($notes)->each->load('user:id,name');
+        $groups = $notes->groupBy(fn (Note $note): string => hash('sha256', $note->textToEmbed()));
+        $batchSize = max(1, (int) env('SEED_EMBEDDING_BATCH_SIZE', 16));
+        $embeddedCount = 0;
+
+        $this->command?->info(
+            'Embedding '.$notes->count().' notes from '.$groups->count().' unique texts in batches of '.$batchSize.'.',
+        );
+
+        foreach ($groups->chunk($batchSize) as $groupBatch) {
             try {
-                $note->load('user:id,name');
-                $embedding = $embeddings->embed($note->textToEmbed());
+                $texts = $groupBatch
+                    ->map(fn ($noteGroup): string => $noteGroup->first()->textToEmbed())
+                    ->values()
+                    ->all();
+                $batchEmbeddings = $this->embedSeedBatch($embeddings, $texts);
 
-                DB::table('notes')
-                    ->where('id', $note->id)
-                    ->update([
-                        'embedding' => DB::raw("'".$this->toVectorLiteral($embedding)."'::vector"),
-                        'embedded_at' => now(),
-                    ]);
+                foreach ($groupBatch->values() as $index => $noteGroup) {
+                    $embeddedCount += $this->storeEmbeddings(
+                        $noteGroup,
+                        $batchEmbeddings[$index],
+                    );
+                }
 
-                $this->command?->info("Embedded seed note: {$note->title}");
+                $this->command?->info('Embedded '.$embeddedCount.' / '.$notes->count().' notes.');
             } catch (Throwable $exception) {
-                $this->command?->warn("Could not embed seed note [{$note->title}]: {$exception->getMessage()}");
+                $this->command?->warn('Could not embed a seed batch: '.$exception->getMessage());
             }
         }
+
+        return $embeddedCount;
+    }
+
+    private function embedSeedBatch(HuggingFaceEmbeddingService $embeddings, array $texts): array
+    {
+        try {
+            return $embeddings->embedMany($texts);
+        } catch (Throwable $exception) {
+            if (count($texts) === 1) {
+                throw $exception;
+            }
+
+            // Some providers enforce smaller payload limits. Split and retry without losing the seed run.
+            $middle = (int) ceil(count($texts) / 2);
+
+            return array_merge(
+                $this->embedSeedBatch($embeddings, array_slice($texts, 0, $middle)),
+                $this->embedSeedBatch($embeddings, array_slice($texts, $middle)),
+            );
+        }
+    }
+
+    private function storeEmbeddings(Collection $notes, array $embedding): int
+    {
+        $placeholders = [];
+        $bindings = [now()];
+
+        foreach ($notes as $note) {
+            $placeholders[] = '(CAST(? AS bigint), CAST(? AS vector))';
+            $bindings[] = $note->id;
+            $bindings[] = $this->toVectorLiteral($embedding);
+        }
+
+        return DB::affectingStatement(
+            'UPDATE notes '
+            .'SET embedding = seed_vectors.embedding, embedded_at = ? '
+            .'FROM (VALUES '.implode(', ', $placeholders).') AS seed_vectors(id, embedding) '
+            .'WHERE notes.id = seed_vectors.id',
+            $bindings,
+        );
+    }
+
+    private function rebuildVectorIndexes(): void
+    {
+        $this->command?->info('Rebuilding vector indexes after bulk embedding.');
+
+        foreach ([
+            'notes_embedding_hnsw_cosine_index',
+            'notes_embedding_hnsw_euclidean_index',
+            'notes_embedding_hnsw_inner_product_index',
+            'notes_embedding_ivfflat_cosine_index',
+            'notes_embedding_ivfflat_euclidean_index',
+            'notes_embedding_ivfflat_inner_product_index',
+        ] as $index) {
+            DB::statement("REINDEX INDEX {$index}");
+        }
+
+        DB::statement('ANALYZE notes');
     }
 
     private function toVectorLiteral(array $embedding): string

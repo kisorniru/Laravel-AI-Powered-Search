@@ -27,6 +27,7 @@ This is **not RAG yet**. There is no LLM answer generation. The app currently re
   - IVFFlat + Euclidean using a pgvector IVFFlat index.
   - IVFFlat + Inner Product using a pgvector IVFFlat index.
 - PostgreSQL `EXPLAIN ANALYZE` inspection with timing, scan type, actual index, buffers, and a sanitized raw plan.
+- Side-by-side Exact vs HNSW vs IVFFlat comparison using one query embedding and one metric.
 - Learning-focused UI explanations for embedding, strategy, metric, comparison, and retrieval.
 
 ## What This System Is Called
@@ -319,7 +320,23 @@ PostgreSQL's planner selects the physical execution plan
 EXPLAIN ANALYZE provides the evidence of what actually ran
 ```
 
-Because HNSW and IVFFlat indexes can exist for the same vector operator, PostgreSQL may choose a different plan than the UI label suggests. This finding will guide the upcoming strategy-comparison implementation.
+Because HNSW and IVFFlat indexes can exist for the same vector operator, PostgreSQL may choose a different plan than the UI label suggests. The strategy comparison therefore reports requested strategy and actual plan separately.
+
+### 11. Compare Exact, HNSW, And IVFFlat
+
+After an AI search, **Compare strategies** embeds the query once and runs three experiments with the same vector, metric, visibility rule, threshold, and result limit.
+
+The comparison table shows:
+
+- Requested strategy.
+- Actual scan types and indexes reported by PostgreSQL.
+- Planning and execution time.
+- Top 2 note results and their metric values.
+- A sanitized raw plan for every experiment.
+
+For the Exact baseline, index and bitmap scans are disabled inside a short transaction so PostgreSQL exhaustively evaluates the eligible vectors. Core PostgreSQL does not provide a built-in hint that selects one specific index when matching HNSW and IVFFlat indexes both exist, so ANN rows remain planner-controlled and report the actual chosen path.
+
+The displayed timings are learning samples rather than a formal benchmark. Cache state, dataset size, concurrent activity, and execution order can affect them.
 
 ## Backend Flow
 
@@ -447,14 +464,25 @@ Demo accounts:
 
 The seeder always creates 40 curated Bangladesh-context notes: 20 for each user, with 10 public and 10 private notes per user. If `HUGGINGFACE_API_TOKEN` is configured, the seeder generates embeddings for these curated notes.
 
-For IVFFlat practice, you can generate extra factory notes:
+For ANN timing and recall practice, benchmark seeding is enabled by default:
 
 ```env
-SEED_FACTORY_NOTES_PER_USER=500
-SEED_FACTORY_NOTES_WITH_EMBEDDINGS=false
+SEED_FACTORY_NOTES_PER_USER=2500
+SEED_FACTORY_NOTES_WITH_EMBEDDINGS=true
+SEED_EMBEDDING_BATCH_SIZE=32
 ```
 
-This example creates 1,000 extra notes total: 500 for Mr. Jhon and 500 for Mr. Sina. Keep `SEED_FACTORY_NOTES_WITH_EMBEDDINGS=false` if you only want rows. Set it to `true` when you are ready to make embedding API calls for the generated notes.
+This creates 5,000 unique factory notes plus the 40 curated notes. The factory combines 20 Bangladesh-context topic families with different sentences, locations, dates, times, companions, weather, transport, costs, follow-up actions, and unique diary references. Public/private visibility is mixed.
+
+The seeder keeps API usage practical:
+
+1. Generate a distinct title and narrative for every factory note.
+2. Send those unique texts to Hugging Face in batches.
+3. Store the real embedding returned for each individual note.
+4. Split and retry a batch automatically if a provider rejects its payload size.
+5. Rebuild HNSW and IVFFlat indexes and run `ANALYZE notes` after embedding.
+
+Batching reduces HTTP overhead, but 5,000 genuinely different notes still require the model to calculate 5,000 embeddings. Seeding can therefore take several minutes and depends on Hugging Face rate limits. Set `SEED_FACTORY_NOTES_WITH_EMBEDDINGS=false` when you want rows without searchable vectors, or set `SEED_FACTORY_NOTES_PER_USER=0` for only curated notes.
 
 Start development:
 
@@ -495,8 +523,8 @@ The test suite expects the configured PostgreSQL database and pgvector extension
 
 Recommended next steps:
 
-1. Compare Exact vs HNSW vs IVFFlat results and actual execution plans.
-2. Learn HNSW `ef_search` and IVFFlat `probes` tuning.
+1. Learn HNSW `ef_search` and IVFFlat `probes` tuning.
+2. Design repeatable benchmarks with larger embedded datasets.
 3. Add chunking later:
 
 ```text
